@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Api.Auth;
+using Api.Profile;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -15,21 +16,24 @@ builder.Services.AddOpenApi();
 // Supabase JWT(JWKS) 검증 — 프론트가 받은 액세스 토큰을 게이트웨이에서 검증한다.
 var supabase = builder.Configuration.GetSection("SUPABASE");
 var supabaseUrl = supabase["URL"]?.TrimEnd('/');
+// JWKS URL은 명시값 우선, 없으면 SUPABASE:URL 에서 유도 (별도 시크릿 불필요)
 var jwksUrl = supabase["JWKS_URL"];
+if (string.IsNullOrEmpty(jwksUrl) && !string.IsNullOrEmpty(supabaseUrl))
+    jwksUrl = $"{supabaseUrl}/auth/v1/.well-known/jwks.json";
 
-// DB connection string은 URL의 프로젝트 ref + 비밀번호(시크릿)로 조합한다 (Direct connection).
-var dbPassword = supabase["DB_PASSWORD"];
+// DB connection string은 DATABASE 섹션의 개별 항목으로 조합한다 (Supabase direct/pooler 모두 대응).
+// 비밀번호는 user-secrets/env(DATABASE:PASSWORD), 나머지(HOST/PORT/USER/DATABASE)는 appsettings 가능.
+var db = builder.Configuration.GetSection("DATABASE");
 string? dbConnString = null;
-if (!string.IsNullOrEmpty(supabaseUrl) && !string.IsNullOrEmpty(dbPassword))
+if (!string.IsNullOrEmpty(db["HOST"]) && !string.IsNullOrEmpty(db["PASSWORD"]))
 {
-    var projectRef = new Uri(supabaseUrl).Host.Split('.')[0];
     dbConnString = new NpgsqlConnectionStringBuilder
     {
-        Host = $"db.{projectRef}.supabase.co",
-        Port = 5432,
-        Database = "postgres",
-        Username = "postgres",
-        Password = dbPassword,
+        Host = db["HOST"],
+        Port = int.TryParse(db["PORT"], out var port) ? port : 5432,
+        Database = string.IsNullOrEmpty(db["DATABASE"]) ? "postgres" : db["DATABASE"],
+        Username = string.IsNullOrEmpty(db["USER"]) ? "postgres" : db["USER"],
+        Password = db["PASSWORD"],
         SslMode = SslMode.Require,
     }.ConnectionString;
 }
@@ -40,10 +44,15 @@ builder.Services
     {
         // 클레임 이름을 원본(sub/email) 그대로 사용 — .NET 기본 URI 매핑 비활성화.
         options.MapInboundClaims = false;
-        options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
-            jwksUrl ?? string.Empty,
-            new JwksConfigurationRetriever(),
-            new HttpDocumentRetriever { RequireHttps = true });
+        // JWKS 미설정 시 ConfigurationManager 생성이 throw → 모든 요청이 죽으므로 가드.
+        // (미설정이면 서명키가 없어 토큰 검증 실패 = 401, 앱은 정상 기동)
+        if (!string.IsNullOrEmpty(jwksUrl))
+        {
+            options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                jwksUrl,
+                new JwksConfigurationRetriever(),
+                new HttpDocumentRetriever { RequireHttps = true });
+        }
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -58,6 +67,12 @@ builder.Services
 
 builder.Services.AddAuthorization();
 
+// CORS — 브라우저(web)가 .NET Api 를 직접 호출(온보딩 username 실시간 검사 등). 토큰은 Authorization 헤더.
+var webOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:3000"];
+builder.Services.AddCors(o => o.AddPolicy("web", p =>
+    p.WithOrigins(webOrigins).AllowAnyHeader().AllowAnyMethod()));
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -67,6 +82,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseCors("web");
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -85,7 +102,7 @@ app.MapGet("/health/db", async () =>
 {
     if (string.IsNullOrEmpty(dbConnString))
     {
-        return Results.Problem("SUPABASE:URL/DB_PASSWORD not configured", statusCode: 503);
+        return Results.Problem("DATABASE:HOST/PASSWORD not configured", statusCode: 503);
     }
     try
     {
@@ -95,9 +112,10 @@ app.MapGet("/health/db", async () =>
         await cmd.ExecuteScalarAsync();
         return Results.Ok(new { db = "ok" });
     }
-    catch (NpgsqlException)
+    catch (Exception ex)
     {
-        return Results.Problem("database unreachable", statusCode: 503);
+        var detail = app.Environment.IsDevelopment() ? ex.Message : "database unreachable";
+        return Results.Problem(detail, statusCode: 503);
     }
 });
 
@@ -119,6 +137,9 @@ app.MapGet("/weatherforecast", () =>
     return forecast;
 })
 .WithName("GetWeatherForecast");
+
+// 프로필 조회·프로비저닝 (/me/profile, /me/username-available)
+app.MapProfileEndpoints(dbConnString);
 
 app.Run();
 
