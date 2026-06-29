@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Api.Auth;
+using Api.Common;
 using Api.Profile;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Protocols;
@@ -93,16 +94,16 @@ app.MapGet("/me", (ClaimsPrincipal user) =>
 {
     var userId = user.FindFirstValue("sub");
     var email = user.FindFirstValue("email");
-    return Results.Ok(new { userId, email });
+    return ApiResults.Ok("OK", new { userId, email });
 })
 .RequireAuthorization();
 
-// DB 연결 확인: Supabase Postgres에 SELECT 1. 비밀번호는 user-secrets/env(SUPABASE:DB_PASSWORD).
+// DB 연결 확인: Supabase Postgres에 SELECT 1. 비밀번호는 user-secrets/env(DATABASE:PASSWORD).
 app.MapGet("/health/db", async () =>
 {
     if (string.IsNullOrEmpty(dbConnString))
     {
-        return Results.Problem("DATABASE:HOST/PASSWORD not configured", statusCode: 503);
+        return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
     }
     try
     {
@@ -110,12 +111,13 @@ app.MapGet("/health/db", async () =>
         await conn.OpenAsync();
         await using var cmd = new NpgsqlCommand("SELECT 1", conn);
         await cmd.ExecuteScalarAsync();
-        return Results.Ok(new { db = "ok" });
+        return ApiResults.Ok("OK");
     }
     catch (Exception ex)
     {
-        var detail = app.Environment.IsDevelopment() ? ex.Message : "database unreachable";
-        return Results.Problem(detail, statusCode: 503);
+        // 표시용 자연어는 보내지 않되, 개발 환경에선 진단을 위해 detail 만 data 에 싣는다.
+        var detail = app.Environment.IsDevelopment() ? ex.Message : null;
+        return ApiResults.ServiceUnavailable("DB_UNAVAILABLE", detail);
     }
 });
 

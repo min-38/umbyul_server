@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Api.Common;
 using Npgsql;
 
 namespace Api.Profile;
@@ -15,8 +16,8 @@ public static class ProfileEndpoints
         // 내 프로필 — 없으면 404 (프론트가 온보딩으로 분기)
         me.MapGet("/profile", async (ClaimsPrincipal user) =>
         {
-            if (dbConnString is null) return Results.Problem("DB not configured", statusCode: 503);
-            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return Results.Unauthorized();
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
 
             await using var conn = new NpgsqlConnection(dbConnString);
             await conn.OpenAsync();
@@ -24,8 +25,8 @@ public static class ProfileEndpoints
                 "select username, country, avatar_url, is_artist, created_at from public.users where id = @id", conn);
             cmd.Parameters.AddWithValue("id", Guid.Parse(id));
             await using var r = await cmd.ExecuteReaderAsync();
-            if (!await r.ReadAsync()) return Results.NotFound();
-            return Results.Ok(new
+            if (!await r.ReadAsync()) return ApiResults.NotFound("PROFILE_NOT_FOUND");
+            return ApiResults.Ok("OK", new
             {
                 id,
                 username = r.GetString(0),
@@ -36,11 +37,12 @@ public static class ProfileEndpoints
             });
         });
 
-        // username 사용 가능 여부 (실시간 검사)
+        // username 사용 가능 여부 (실시간 검사). 가용성은 data 로, reason 도 code 로.
         me.MapGet("/username-available", async (string? username) =>
         {
-            if (dbConnString is null) return Results.Problem("DB not configured", statusCode: 503);
-            if (!ProfileValidation.IsUsername(username)) return Results.Ok(new { available = false, reason = "invalid" });
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (!ProfileValidation.IsUsername(username))
+                return ApiResults.Ok("OK", new { available = false, reason = "INVALID" });
 
             await using var conn = new NpgsqlConnection(dbConnString);
             await conn.OpenAsync();
@@ -48,23 +50,23 @@ public static class ProfileEndpoints
                 "select 1 from public.users where lower(username) = lower(@u) limit 1", conn);
             cmd.Parameters.AddWithValue("u", username!);
             var taken = await cmd.ExecuteScalarAsync() is not null;
-            return Results.Ok(new { available = !taken, reason = taken ? "taken" : null });
+            return ApiResults.Ok("OK", new { available = !taken, reason = taken ? "TAKEN" : null });
         });
 
         // 프로비저닝 — body 또는 user_metadata(이메일 가입)에서 username/country 취득. username UNIQUE 보장.
         me.MapPost("/profile", async (ProvisionRequest? body, ClaimsPrincipal user) =>
         {
-            if (dbConnString is null) return Results.Problem("DB not configured", statusCode: 503);
-            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return Results.Unauthorized();
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
 
             var (metaUsername, metaCountry) = ReadUserMetadata(user);
             var username = Coalesce(body?.Username, metaUsername);
             var country = Coalesce(body?.Country, metaCountry);
 
             if (!ProfileValidation.IsUsername(username))
-                return Results.BadRequest(new { error = "invalid_username" });
+                return ApiResults.BadRequest("INVALID_USERNAME");
             if (country is not null && !ProfileValidation.IsCountry(country))
-                return Results.BadRequest(new { error = "invalid_country" });
+                return ApiResults.BadRequest("INVALID_COUNTRY");
 
             await using var conn = new NpgsqlConnection(dbConnString);
             await conn.OpenAsync();
@@ -74,7 +76,7 @@ public static class ProfileEndpoints
             {
                 exists.Parameters.AddWithValue("id", Guid.Parse(id));
                 if (await exists.ExecuteScalarAsync() is not null)
-                    return Results.Ok(new { provisioned = false, reason = "already_exists" });
+                    return ApiResults.Ok("ALREADY_PROVISIONED");
             }
 
             try
@@ -88,9 +90,9 @@ public static class ProfileEndpoints
             }
             catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
             {
-                return Results.Conflict(new { error = "username_taken" });
+                return ApiResults.Conflict("USERNAME_TAKEN");
             }
-            return Results.Created("/me/profile", new { provisioned = true });
+            return ApiResults.Created("PROVISIONED", new { provisioned = true });
         });
     }
 
