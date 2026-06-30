@@ -21,7 +21,7 @@ public sealed record UserProfile(
 
 public static class PublicProfileEndpoints
 {
-    private record Row(string Id, string Tt, string? Sid, decimal Score, string? Body, DateTimeOffset Created, int Likes);
+    private record Row(string Id, string Tt, string? Sid, string? TargetId, decimal Score, string? Body, DateTimeOffset Created, int Likes);
 
     public static void MapPublicProfileEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -56,7 +56,7 @@ public static class PublicProfileEndpoints
             {
                 await using var rcmd = new NpgsqlCommand(
                     """
-                    select r.id, r.target_type, r.target_spotify_id, r.score, r.review, r.created_at,
+                    select r.id, r.target_type, r.target_spotify_id, r.target_id, r.score, r.review, r.created_at,
                            count(re.id) filter (where re.value = 'like') as likes
                     from public.ratings r
                     left join public.review_reactions re on re.rating_id = r.id
@@ -69,9 +69,10 @@ public static class PublicProfileEndpoints
                 while (await rr.ReadAsync(ct))
                     rows.Add(new Row(
                         rr.GetGuid(0).ToString(), rr.GetString(1),
-                        rr.IsDBNull(2) ? null : rr.GetString(2), rr.GetDecimal(3),
-                        rr.IsDBNull(4) ? null : rr.GetString(4), rr.GetFieldValue<DateTimeOffset>(5),
-                        (int)rr.GetInt64(6)));
+                        rr.IsDBNull(2) ? null : rr.GetString(2),
+                        rr.IsDBNull(3) ? null : rr.GetString(3), rr.GetDecimal(4),
+                        rr.IsDBNull(5) ? null : rr.GetString(5), rr.GetFieldValue<DateTimeOffset>(6),
+                        (int)rr.GetInt64(7)));
             }
             catch (NpgsqlException)
             {
@@ -84,8 +85,8 @@ public static class PublicProfileEndpoints
 
             var reviews = rows.Select(x =>
             {
-                display.TryGetValue(x.Sid ?? "", out var d);
-                return new ProfileReview(x.Id, x.Tt, x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image);
+                display.TryGetValue(x.Id, out var d);
+                return new ProfileReview(x.Id, x.Tt, d.SpotifyId ?? x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image);
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(
@@ -117,53 +118,70 @@ public static class PublicProfileEndpoints
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
 
-    private record Resolved(string? Id, string? Name, string? Artist, string? Image);
+    private record Resolved(string RatingId, string? Name, string? Artist, string? Image, string? SpotifyId);
 
-    // target_spotify_id → 이름/아티스트/이미지.
-    // 배치(/tracks?ids=)는 앱 토큰으로 403 → 단건 조회를 동시성 8로 제한해 병렬.
-    private static async Task<Dictionary<string, (string? Name, string? Artist, string? Image)>> ResolveAsync(
+    // rating id → 표시(이름/아티스트/이미지/spotify_id). 단건 조회를 동시성 8로 병렬.
+    // 1순위: target_spotify_id 직접. 폴백: ISRC(track)/UPC(album) 검색(spotify_id 없는 구 평점).
+    private static async Task<Dictionary<string, (string? Name, string? Artist, string? Image, string? SpotifyId)>> ResolveAsync(
         SpotifyClient spotify, List<Row> rows, CancellationToken ct)
     {
-        var map = new Dictionary<string, (string?, string?, string?)>();
+        var map = new Dictionary<string, (string?, string?, string?, string?)>();
         if (!spotify.Configured) return map;
 
-        var targets = rows
-            .Where(r => !string.IsNullOrEmpty(r.Sid))
-            .Select(r => (Type: r.Tt, Id: r.Sid!))
-            .Distinct()
-            .ToList();
-        if (targets.Count == 0) return map;
-
         using var sem = new SemaphoreSlim(8);
-        var tasks = targets.Select(async t =>
+        var tasks = rows.Select(async row =>
         {
             await sem.WaitAsync(ct);
-            try
-            {
-                var json = await spotify.GetAsync(t.Type == "track" ? $"tracks/{t.Id}" : $"albums/{t.Id}", ct);
-                if (json is null) return new Resolved(null, null, null, null);
-                using var doc = JsonDocument.Parse(json);
-                if (t.Type == "track")
-                {
-                    var tr = DetailParse.Track(doc.RootElement);
-                    return new Resolved(tr.SpotifyId, tr.Name, tr.Artists.Count > 0 ? tr.Artists[0].Name : null, tr.Album?.ImageUrl);
-                }
-                var al = DetailParse.Album(doc.RootElement);
-                return new Resolved(al.SpotifyId, al.Name, al.Artists.Count > 0 ? al.Artists[0].Name : null, al.ImageUrl);
-            }
-            catch (HttpRequestException)
-            {
-                return new Resolved(null, null, null, null);
-            }
-            finally
-            {
-                sem.Release();
-            }
+            try { return await ResolveOneAsync(spotify, row, ct); }
+            finally { sem.Release(); }
         });
 
         foreach (var r in await Task.WhenAll(tasks))
-            if (r.Id is not null) map[r.Id] = (r.Name, r.Artist, r.Image);
+            if (r.Name is not null || r.SpotifyId is not null)
+                map[r.RatingId] = (r.Name, r.Artist, r.Image, r.SpotifyId);
 
         return map;
+    }
+
+    private static async Task<Resolved> ResolveOneAsync(SpotifyClient spotify, Row row, CancellationToken ct)
+    {
+        try
+        {
+            // 1순위: spotify_id 직접 조회
+            if (!string.IsNullOrEmpty(row.Sid))
+            {
+                var json = await spotify.GetAsync(row.Tt == "track" ? $"tracks/{row.Sid}" : $"albums/{row.Sid}", ct);
+                if (json is not null)
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    return FromElement(row.Id, row.Tt, doc.RootElement);
+                }
+            }
+            // 폴백: ISRC/UPC 검색 (1건)
+            if (!string.IsNullOrEmpty(row.TargetId))
+            {
+                var filter = row.Tt == "track" ? $"isrc:{row.TargetId}" : $"upc:{row.TargetId}";
+                var json = await spotify.SearchAsync(filter, row.Tt, 1, 0, ct);
+                using var doc = JsonDocument.Parse(json);
+                var key = row.Tt == "track" ? "tracks" : "albums";
+                if (doc.RootElement.TryGetProperty(key, out var cat)
+                    && cat.TryGetProperty("items", out var items)
+                    && items.ValueKind == JsonValueKind.Array && items.GetArrayLength() > 0)
+                    return FromElement(row.Id, row.Tt, items[0]);
+            }
+        }
+        catch (HttpRequestException) { }
+        return new Resolved(row.Id, null, null, null, null);
+    }
+
+    private static Resolved FromElement(string ratingId, string tt, JsonElement el)
+    {
+        if (tt == "track")
+        {
+            var t = DetailParse.Track(el);
+            return new Resolved(ratingId, t.Name, t.Artists.Count > 0 ? t.Artists[0].Name : null, t.Album?.ImageUrl, t.SpotifyId);
+        }
+        var a = DetailParse.Album(el);
+        return new Resolved(ratingId, a.Name, a.Artists.Count > 0 ? a.Artists[0].Name : null, a.ImageUrl, a.SpotifyId);
     }
 }
