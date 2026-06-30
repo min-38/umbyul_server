@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
 using Api.Detail;
@@ -14,7 +15,9 @@ public sealed record ProfileReview(
 
 public sealed record UserProfile(
     string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
-    int ReviewCount, int TotalLikes, IReadOnlyList<ProfileReview> Reviews);
+    int ReviewCount, int TotalLikes,
+    int FollowerCount, int FollowingCount, bool IsFollowing,
+    IReadOnlyList<ProfileReview> Reviews);
 
 public static class PublicProfileEndpoints
 {
@@ -22,7 +25,7 @@ public static class PublicProfileEndpoints
 
     public static void MapPublicProfileEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/users/{username}", async (string username, SpotifyClient spotify, CancellationToken ct) =>
+        app.MapGet("/users/{username}", async (string username, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
 
@@ -76,6 +79,7 @@ public static class PublicProfileEndpoints
             }
 
             var totalLikes = rows.Sum(x => x.Likes);
+            var (followers, following, isFollowing) = await LoadFollowStatsAsync(conn, uid, Me(user), ct);
             var display = await ResolveAsync(spotify, rows, ct);
 
             var reviews = rows.Select(x =>
@@ -84,9 +88,34 @@ public static class PublicProfileEndpoints
                 return new ProfileReview(x.Id, x.Tt, x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image);
             }).ToList();
 
-            return ApiResults.Ok("OK", new UserProfile(uname, avatar, joined, rows.Count, totalLikes, reviews));
+            return ApiResults.Ok("OK", new UserProfile(
+                uname, avatar, joined, rows.Count, totalLikes, followers, following, isFollowing, reviews));
         });
     }
+
+    // 팔로워/팔로잉 수 + 뷰어의 팔로우 여부. follows 미존재(마이그레이션 전)면 0/false.
+    private static async Task<(int Followers, int Following, bool IsFollowing)> LoadFollowStatsAsync(
+        NpgsqlConnection conn, Guid uid, Guid? viewer, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                select (select count(*) from public.follows where following_id = @uid),
+                       (select count(*) from public.follows where follower_id = @uid),
+                       exists(select 1 from public.follows where follower_id = @viewer and following_id = @uid)
+                """, conn);
+            cmd.Parameters.AddWithValue("uid", uid);
+            cmd.Parameters.AddWithValue("viewer", (object?)viewer ?? DBNull.Value);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            await r.ReadAsync(ct);
+            return ((int)r.GetInt64(0), (int)r.GetInt64(1), r.GetBoolean(2));
+        }
+        catch (NpgsqlException) { return (0, 0, false); }
+    }
+
+    private static Guid? Me(ClaimsPrincipal user) =>
+        user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
 
     private record Resolved(string? Id, string? Name, string? Artist, string? Image);
 

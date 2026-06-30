@@ -168,6 +168,9 @@ app.MapRatingEndpoints(dbConnString);
 app.MapReactionEndpoints(dbConnString);
 app.MapReportEndpoints(dbConnString);
 
+// 팔로우 (/me/follows, /users/{username}/followers·following) — NON-25
+app.MapFollowEndpoints(dbConnString);
+
 app.Run();
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
