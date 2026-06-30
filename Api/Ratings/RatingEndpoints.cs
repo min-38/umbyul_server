@@ -8,7 +8,7 @@ namespace Api.Ratings;
 /// 1인 1평점/대상이라 등록은 upsert(conflict 시 갱신). 키 = ISRC/UPC(상세 응답의 targetId).
 public static class RatingEndpoints
 {
-    public sealed record RatingRequest(string? TargetType, string? TargetId, decimal Score, string? Review);
+    public sealed record RatingRequest(string? TargetType, string? TargetId, string? SpotifyId, decimal Score, string? Review);
 
     public static void MapRatingEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -31,14 +31,16 @@ public static class RatingEndpoints
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
                     """
-                    insert into public.ratings (user_id, target_type, target_id, score, review)
-                    values (@uid, @tt, @tid, @score, @review)
+                    insert into public.ratings (user_id, target_type, target_id, target_spotify_id, score, review)
+                    values (@uid, @tt, @tid, @sid, @score, @review)
                     on conflict (user_id, target_type, target_id)
-                    do update set score = excluded.score, review = excluded.review
+                    do update set score = excluded.score, review = excluded.review,
+                                  target_spotify_id = excluded.target_spotify_id
                     """, conn);
                 cmd.Parameters.AddWithValue("uid", Guid.Parse(id));
                 cmd.Parameters.AddWithValue("tt", req.TargetType!);
                 cmd.Parameters.AddWithValue("tid", req.TargetId!.Trim());
+                cmd.Parameters.AddWithValue("sid", (object?)(string.IsNullOrWhiteSpace(req.SpotifyId) ? null : req.SpotifyId!.Trim()) ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("score", req.Score);
                 cmd.Parameters.AddWithValue("review", (object?)review ?? DBNull.Value);
                 await cmd.ExecuteNonQueryAsync();

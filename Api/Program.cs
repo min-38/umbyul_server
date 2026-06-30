@@ -152,6 +152,9 @@ app.MapGet("/weatherforecast", () =>
 // 프로필 조회·프로비저닝 (/me/profile, /me/username-available)
 app.MapProfileEndpoints(dbConnString);
 
+// 공개 유저 프로필 (/users/{username}) — 유저 + 작성 리뷰 (NON-24)
+app.MapPublicProfileEndpoints(dbConnString);
+
 // 통합 검색 (/search) — Spotify(track/album/artist) + users
 app.MapSearchEndpoints(dbConnString);
 
