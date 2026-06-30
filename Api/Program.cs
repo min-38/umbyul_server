@@ -5,6 +5,7 @@ using Api.Detail;
 using Api.Profile;
 using Api.Ratings;
 using Api.Search;
+using Api.Social;
 using Api.Spotify;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Protocols;
@@ -159,6 +160,10 @@ app.MapDetailEndpoints(dbConnString);
 
 // 평점·리뷰 등록/수정/삭제 (/me/ratings) — 로그인 (NON-7)
 app.MapRatingEndpoints(dbConnString);
+
+// 리뷰 좋아요/싫어요 (/me/reactions), 신고 (/me/reports) — 로그인 (NON-23)
+app.MapReactionEndpoints(dbConnString);
+app.MapReportEndpoints(dbConnString);
 
 app.Run();
 

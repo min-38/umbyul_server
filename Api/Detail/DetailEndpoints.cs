@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
 using Api.Spotify;
@@ -12,7 +13,7 @@ public static class DetailEndpoints
 {
     public static void MapDetailEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/detail/track/{id}", async (string id, SpotifyClient spotify, CancellationToken ct) =>
+        app.MapGet("/detail/track/{id}", async (string id, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
 
@@ -27,14 +28,14 @@ public static class DetailEndpoints
             // 레이블/저작권은 앨범 객체(copyrights)에 있어 별도 조회. 실패해도 본문은 살린다.
             var copyright = await FetchCopyrightAsync(spotify, t.AlbumId, ct);
             var targetId = t.Isrc ?? t.SpotifyId;
-            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "track", targetId, ct);
+            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "track", targetId, Me(user), ct);
 
             return ApiResults.Ok("OK", new TrackDetail(
                 t.SpotifyId, t.Name, t.SpotifyUrl, t.Artists, t.Album, t.Isrc, targetId, t.DurationMs,
                 t.ReleaseDate, copyright, summary, reviews));
         });
 
-        app.MapGet("/detail/album/{id}", async (string id, SpotifyClient spotify, CancellationToken ct) =>
+        app.MapGet("/detail/album/{id}", async (string id, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
 
@@ -47,7 +48,7 @@ public static class DetailEndpoints
             using (var doc = JsonDocument.Parse(json)) a = DetailParse.Album(doc.RootElement);
 
             var targetId = a.Upc ?? a.SpotifyId;
-            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "album", targetId, ct);
+            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "album", targetId, Me(user), ct);
 
             return ApiResults.Ok("OK", new AlbumDetail(
                 a.SpotifyId, a.Name, a.SpotifyUrl, a.Artists, a.ImageUrl, a.Upc, targetId, a.ReleaseDate, a.Copyright,
@@ -68,9 +69,13 @@ public static class DetailEndpoints
         catch (HttpRequestException) { return null; }
     }
 
-    // 우리 DB의 평점/리뷰 + 평균. ratings JOIN users. 아직 NON-7 전이라 보통 비어 있다.
+    // 토큰이 있으면 내 user id, 없으면 null. 상세는 공개라 [Authorize] 아님 → 옵셔널.
+    private static Guid? Me(ClaimsPrincipal user) =>
+        user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
+
+    // 우리 DB의 평점/리뷰 + 평균 + 리뷰별 좋아요/싫어요 집계, me 의 반응(NON-23).
     private static async Task<(RatingSummary, IReadOnlyList<ReviewItem>)> LoadReviewsAsync(
-        string? dbConnString, string targetType, string targetId, CancellationToken ct)
+        string? dbConnString, string targetType, string targetId, Guid? me, CancellationToken ct)
     {
         var empty = new RatingSummary(null, 0);
         if (dbConnString is null) return (empty, []);
@@ -80,14 +85,20 @@ public static class DetailEndpoints
             await conn.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 """
-                select r.id, r.user_id, u.username, u.avatar_url, r.score, r.review, r.created_at
+                select r.id, r.user_id, u.username, u.avatar_url, r.score, r.review, r.created_at,
+                       count(re.id) filter (where re.value = 'like')    as likes,
+                       count(re.id) filter (where re.value = 'dislike') as dislikes,
+                       max(case when re.user_id = @me then re.value end) as my_reaction
                 from public.ratings r
                 join public.users u on u.id = r.user_id
+                left join public.review_reactions re on re.rating_id = r.id
                 where r.target_type = @tt and r.target_id = @tid
+                group by r.id, u.username, u.avatar_url
                 order by r.created_at desc
                 """, conn);
             cmd.Parameters.AddWithValue("tt", targetType);
             cmd.Parameters.AddWithValue("tid", targetId);
+            cmd.Parameters.AddWithValue("me", (object?)me ?? DBNull.Value);
 
             var reviews = new List<ReviewItem>();
             decimal sum = 0;
@@ -104,7 +115,10 @@ public static class DetailEndpoints
                         r.IsDBNull(3) ? null : r.GetString(3),
                         score,
                         r.IsDBNull(5) ? null : r.GetString(5),
-                        r.GetFieldValue<DateTimeOffset>(6)));
+                        r.GetFieldValue<DateTimeOffset>(6),
+                        (int)r.GetInt64(7),
+                        (int)r.GetInt64(8),
+                        r.IsDBNull(9) ? null : r.GetString(9)));
                 }
             }
 
