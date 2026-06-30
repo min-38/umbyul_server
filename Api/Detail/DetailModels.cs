@@ -21,6 +21,7 @@ public sealed record ReviewItem(
 
 // 장르: Spotify 앱 토큰으론 아티스트 genres가 안 내려와 제외(2024 메타데이터 축소, 실측 확인).
 // 레이블: 앨범 label 직접 필드도 없어 copyrights(℗/©) 텍스트로 대체.
+// TargetId = 평점 키(ISRC/UPC, 없으면 spotify_id). 클라가 평가 등록(NON-7) 시 그대로 사용.
 public sealed record TrackDetail(
     string SpotifyId,
     string Name,
@@ -28,6 +29,7 @@ public sealed record TrackDetail(
     IReadOnlyList<ArtistRef> Artists,
     AlbumRef? Album,
     string? Isrc,
+    string TargetId,
     int DurationMs,
     string? ReleaseDate,
     string? Copyright,
@@ -41,6 +43,7 @@ public sealed record AlbumDetail(
     IReadOnlyList<ArtistRef> Artists,
     string? ImageUrl,
     string? Upc,
+    string TargetId,
     string? ReleaseDate,
     string? Copyright,
     int TotalTracks,

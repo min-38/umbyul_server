@@ -3,6 +3,7 @@ using Api.Auth;
 using Api.Common;
 using Api.Detail;
 using Api.Profile;
+using Api.Ratings;
 using Api.Search;
 using Api.Spotify;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -155,6 +156,9 @@ app.MapSearchEndpoints(dbConnString);
 
 // 앨범/곡 상세 (/detail/track, /detail/album) — Spotify 라이브 + 평점/리뷰 (NON-6)
 app.MapDetailEndpoints(dbConnString);
+
+// 평점·리뷰 등록/수정/삭제 (/me/ratings) — 로그인 (NON-7)
+app.MapRatingEndpoints(dbConnString);
 
 app.Run();
 

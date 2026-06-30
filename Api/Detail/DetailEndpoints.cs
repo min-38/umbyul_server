@@ -26,10 +26,11 @@ public static class DetailEndpoints
 
             // 레이블/저작권은 앨범 객체(copyrights)에 있어 별도 조회. 실패해도 본문은 살린다.
             var copyright = await FetchCopyrightAsync(spotify, t.AlbumId, ct);
-            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "track", t.Isrc ?? t.SpotifyId, ct);
+            var targetId = t.Isrc ?? t.SpotifyId;
+            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "track", targetId, ct);
 
             return ApiResults.Ok("OK", new TrackDetail(
-                t.SpotifyId, t.Name, t.SpotifyUrl, t.Artists, t.Album, t.Isrc, t.DurationMs,
+                t.SpotifyId, t.Name, t.SpotifyUrl, t.Artists, t.Album, t.Isrc, targetId, t.DurationMs,
                 t.ReleaseDate, copyright, summary, reviews));
         });
 
@@ -45,10 +46,11 @@ public static class DetailEndpoints
             DetailParse.ParsedAlbum a;
             using (var doc = JsonDocument.Parse(json)) a = DetailParse.Album(doc.RootElement);
 
-            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "album", a.Upc ?? a.SpotifyId, ct);
+            var targetId = a.Upc ?? a.SpotifyId;
+            var (summary, reviews) = await LoadReviewsAsync(dbConnString, "album", targetId, ct);
 
             return ApiResults.Ok("OK", new AlbumDetail(
-                a.SpotifyId, a.Name, a.SpotifyUrl, a.Artists, a.ImageUrl, a.Upc, a.ReleaseDate, a.Copyright,
+                a.SpotifyId, a.Name, a.SpotifyUrl, a.Artists, a.ImageUrl, a.Upc, targetId, a.ReleaseDate, a.Copyright,
                 a.TotalTracks, a.Tracks, summary, reviews));
         });
     }
