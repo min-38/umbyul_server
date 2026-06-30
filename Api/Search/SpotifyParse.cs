@@ -15,14 +15,15 @@ public static class SpotifyParse
             total = TotalOf(t);
             foreach (var it in ItemsOf(t))
             {
-                string? albumName = null, image = null;
+                string? albumId = null, albumName = null, image = null;
                 if (it.TryGetProperty("album", out var al))
                 {
+                    albumId = Str(al, "id");
                     albumName = Str(al, "name");
                     image = FirstImage(al);
                 }
                 list.Add(new TrackResult(
-                    Str(it, "id") ?? "", Str(it, "name") ?? "", FirstArtist(it), albumName, image, Isrc(it)));
+                    Str(it, "id") ?? "", Str(it, "name") ?? "", FirstArtist(it), albumId, albumName, image, Isrc(it)));
             }
         }
         return (list, total);

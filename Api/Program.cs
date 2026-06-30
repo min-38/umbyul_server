@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Api.Auth;
 using Api.Common;
+using Api.Detail;
 using Api.Profile;
 using Api.Search;
 using Api.Spotify;
@@ -151,6 +152,9 @@ app.MapProfileEndpoints(dbConnString);
 
 // 통합 검색 (/search) — Spotify(track/album/artist) + users
 app.MapSearchEndpoints(dbConnString);
+
+// 앨범/곡 상세 (/detail/track, /detail/album) — Spotify 라이브 + 평점/리뷰 (NON-6)
+app.MapDetailEndpoints(dbConnString);
 
 app.Run();
 

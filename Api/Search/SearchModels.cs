@@ -10,7 +10,7 @@ public record SearchResults(
 public record CategoryResult<T>(IReadOnlyList<T> Items, int Total);
 
 // 평점/review count 는 NON-7/8 이후. 지금은 메타데이터만.
-public record TrackResult(string Id, string Name, string Artist, string? AlbumName, string? ImageUrl, string? Isrc);
+public record TrackResult(string Id, string Name, string Artist, string? AlbumId, string? AlbumName, string? ImageUrl, string? Isrc);
 
 public record AlbumResult(string Id, string Name, string Artist, string? ImageUrl, string? ReleaseDate);
 

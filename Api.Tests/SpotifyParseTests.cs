@@ -13,7 +13,7 @@ public class SpotifyParseTests
         var root = Parse("""
         {"tracks":{"total":42,"items":[
           {"id":"t1","name":"Song A","artists":[{"name":"Artist X"},{"name":"Y"}],
-           "album":{"name":"Album Z","images":[{"url":"http://img/1"}]},"external_ids":{"isrc":"KRA401600005"}},
+           "album":{"id":"al1","name":"Album Z","images":[{"url":"http://img/1"}]},"external_ids":{"isrc":"KRA401600005"}},
           {"id":"t2","name":"Song B","artists":[],"album":{"name":"Album Y","images":[]}}
         ]}}
         """);
@@ -26,12 +26,14 @@ public class SpotifyParseTests
         Assert.Equal("t1", items[0].Id);
         Assert.Equal("Song A", items[0].Name);
         Assert.Equal("Artist X", items[0].Artist); // 첫 아티스트만
+        Assert.Equal("al1", items[0].AlbumId);
         Assert.Equal("Album Z", items[0].AlbumName);
         Assert.Equal("http://img/1", items[0].ImageUrl);
         Assert.Equal("KRA401600005", items[0].Isrc);
 
         // 누락 필드 안전 처리
         Assert.Equal("", items[1].Artist); // artists 빈 배열
+        Assert.Null(items[1].AlbumId); // album.id 없음
         Assert.Null(items[1].ImageUrl); // images 빈 배열
         Assert.Null(items[1].Isrc); // external_ids 없음
     }

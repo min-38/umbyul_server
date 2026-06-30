@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -28,6 +29,25 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var res = await http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException($"Spotify {(int)res.StatusCode} for {url} :: {body}");
+        }
+        return await res.Content.ReadAsStringAsync(ct);
+    }
+
+    /// 임의 GET 엔드포인트(tracks/{id}, albums/{id}, artists/{id} 등). 원시 JSON 반환.
+    /// 404 → null(존재하지 않는 리소스). 그 외 비정상 → HttpRequestException.
+    public async Task<string?> GetAsync(string path, CancellationToken ct)
+    {
+        var token = await GetTokenAsync(ct);
+        var url = $"https://api.spotify.com/v1/{path}";
+        using var http = factory.CreateClient();
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var res = await http.SendAsync(req, ct);
+        if (res.StatusCode == HttpStatusCode.NotFound) return null;
         if (!res.IsSuccessStatusCode)
         {
             var body = await res.Content.ReadAsStringAsync(ct);
