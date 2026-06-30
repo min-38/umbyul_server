@@ -5,8 +5,8 @@ using Npgsql;
 
 namespace Api.Search;
 
-/// 통합 검색 (비로그인 공개). 타입별로 따로 호출(각 최대 50, offset 페이징) 후 합친다.
-/// 평점/리뷰수는 NON-7/8 이후. 캐싱은 항목이 실제 참조될 때(NON-6/7).
+/// 통합 검색 (비로그인 공개). 타입별로 따로 호출(offset 페이징) 후 합친다. 파싱은 SpotifyParse.
+/// 평점/리뷰수는 NON-7/8 이후. 캐싱/식별은 NON-6(상세)에서 컴플라이언트하게.
 public static class SearchEndpoints
 {
     // 이 Spotify 앱은 limit>10 이면 "Invalid limit"(개발모드 쿼터 추정) → 10 고정. offset 페이징은 정상.
@@ -47,82 +47,50 @@ public static class SearchEndpoints
 
     private static async Task<CategoryResult<TrackResult>> TracksAsync(SpotifyClient spotify, string q, int offset, CancellationToken ct)
     {
-        var items = new List<TrackResult>();
-        var total = 0;
-        if (spotify.Configured)
+        if (!spotify.Configured) return new CategoryResult<TrackResult>([], 0);
+        try
         {
-            try
-            {
-                var json = await spotify.SearchAsync(q, "track", PageSize, offset, ct);
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("tracks", out var t))
-                {
-                    total = TotalOf(t);
-                    foreach (var it in ItemsOf(t))
-                    {
-                        string? albumName = null, image = null;
-                        if (it.TryGetProperty("album", out var al))
-                        {
-                            albumName = Str(al, "name");
-                            image = FirstImage(al);
-                        }
-                        items.Add(new TrackResult(
-                            Str(it, "id") ?? "", Str(it, "name") ?? "", FirstArtist(it), albumName, image, Isrc(it)));
-                    }
-                }
-            }
-            catch (HttpRequestException) { }
+            var json = await spotify.SearchAsync(q, "track", PageSize, offset, ct);
+            using var doc = JsonDocument.Parse(json);
+            var (items, total) = SpotifyParse.Tracks(doc.RootElement);
+            return new CategoryResult<TrackResult>(items, total);
         }
-        return new CategoryResult<TrackResult>(items, total);
+        catch (HttpRequestException)
+        {
+            return new CategoryResult<TrackResult>([], 0);
+        }
     }
 
     private static async Task<CategoryResult<AlbumResult>> AlbumsAsync(SpotifyClient spotify, string q, int offset, CancellationToken ct)
     {
-        var items = new List<AlbumResult>();
-        var total = 0;
-        if (spotify.Configured)
+        if (!spotify.Configured) return new CategoryResult<AlbumResult>([], 0);
+        try
         {
-            try
-            {
-                var json = await spotify.SearchAsync(q, "album", PageSize, offset, ct);
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("albums", out var a))
-                {
-                    total = TotalOf(a);
-                    foreach (var it in ItemsOf(a))
-                    {
-                        items.Add(new AlbumResult(
-                            Str(it, "id") ?? "", Str(it, "name") ?? "", FirstArtist(it), FirstImage(it), Str(it, "release_date")));
-                    }
-                }
-            }
-            catch (HttpRequestException) { }
+            var json = await spotify.SearchAsync(q, "album", PageSize, offset, ct);
+            using var doc = JsonDocument.Parse(json);
+            var (items, total) = SpotifyParse.Albums(doc.RootElement);
+            return new CategoryResult<AlbumResult>(items, total);
         }
-        return new CategoryResult<AlbumResult>(items, total);
+        catch (HttpRequestException)
+        {
+            return new CategoryResult<AlbumResult>([], 0);
+        }
     }
 
     private static async Task<CategoryResult<ArtistResult>> ArtistsAsync(SpotifyClient spotify, string q, int offset, CancellationToken ct)
     {
-        var items = new List<ArtistResult>();
-        var total = 0;
-        if (spotify.Configured)
+        if (!spotify.Configured) return new CategoryResult<ArtistResult>([], 0);
+        try
         {
-            try
-            {
-                var json = await spotify.SearchAsync(q, "artist", PageSize, offset, ct);
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("artists", out var ar))
-                {
-                    total = TotalOf(ar);
-                    foreach (var it in ItemsOf(ar))
-                    {
-                        items.Add(new ArtistResult(Str(it, "id") ?? "", Str(it, "name") ?? "", FirstImage(it)));
-                    }
-                }
-            }
-            catch (HttpRequestException) { }
+            var json = await spotify.SearchAsync(q, "artist", PageSize, offset, ct);
+            using var doc = JsonDocument.Parse(json);
+            var (items, total) = SpotifyParse.Artists(doc.RootElement);
+            return new CategoryResult<ArtistResult>(items, total);
         }
-        return new CategoryResult<ArtistResult>(items, total);
+        catch (HttpRequestException)
+        {
+            return new CategoryResult<ArtistResult>([], 0);
+        }
     }
 
     private static async Task<CategoryResult<UserResult>> UsersAsync(string? conn, string q, int offset, CancellationToken ct)
@@ -152,31 +120,4 @@ public static class SearchEndpoints
         }
         return new CategoryResult<UserResult>(items, total);
     }
-
-    private static int TotalOf(JsonElement category) =>
-        category.TryGetProperty("total", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetInt32() : 0;
-
-    private static IEnumerable<JsonElement> ItemsOf(JsonElement category) =>
-        category.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array
-            ? items.EnumerateArray()
-            : [];
-
-    private static string? Str(JsonElement e, string prop) =>
-        e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static string FirstArtist(JsonElement e) =>
-        e.TryGetProperty("artists", out var a) && a.ValueKind == JsonValueKind.Array && a.GetArrayLength() > 0
-            ? Str(a[0], "name") ?? ""
-            : "";
-
-    private static string? FirstImage(JsonElement e) =>
-        e.TryGetProperty("images", out var img) && img.ValueKind == JsonValueKind.Array && img.GetArrayLength() > 0
-            ? Str(img[0], "url")
-            : null;
-
-    private static string? Isrc(JsonElement e) =>
-        e.TryGetProperty("external_ids", out var x) && x.TryGetProperty("isrc", out var i) &&
-        i.ValueKind == JsonValueKind.String
-            ? i.GetString()
-            : null;
 }
