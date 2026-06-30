@@ -17,20 +17,23 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
 
     public bool Configured => !string.IsNullOrEmpty(_clientId) && !string.IsNullOrEmpty(_clientSecret);
 
-    /// 검색. 트랙은 external_ids.isrc 포함. 앨범 upc 는 search 응답엔 없어 GET /albums/{id} 필요(NON-5).
-    public async Task<JsonElement> SearchAsync(string query, string types, int limit, CancellationToken ct)
+    /// 검색. 원시 JSON 문자열을 반환 — 호출부가 자기 스코프에서 파싱(JsonDocument 수명 문제 회피).
+    /// 트랙은 external_ids.isrc 포함. 앨범 upc 는 search 응답엔 없어 GET /albums/{id} 필요(NON-5).
+    public async Task<string> SearchAsync(string query, string types, int limit, int offset, CancellationToken ct)
     {
         var token = await GetTokenAsync(ct);
         var url = $"https://api.spotify.com/v1/search?q={Uri.EscapeDataString(query)}" +
-                  $"&type={Uri.EscapeDataString(types)}&limit={limit}";
+                  $"&type={Uri.EscapeDataString(types)}&limit={limit}&offset={offset}";
         using var http = factory.CreateClient();
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var res = await http.SendAsync(req, ct);
-        res.EnsureSuccessStatusCode();
-        await using var stream = await res.Content.ReadAsStreamAsync(ct);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        return doc.RootElement.Clone();
+        if (!res.IsSuccessStatusCode)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException($"Spotify {(int)res.StatusCode} for {url} :: {body}");
+        }
+        return await res.Content.ReadAsStringAsync(ct);
     }
 
     private async Task<string> GetTokenAsync(CancellationToken ct)

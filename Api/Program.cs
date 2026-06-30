@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Api.Auth;
 using Api.Common;
 using Api.Profile;
+using Api.Search;
 using Api.Spotify;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Protocols;
@@ -148,22 +149,8 @@ app.MapGet("/weatherforecast", () =>
 // 프로필 조회·프로비저닝 (/me/profile, /me/username-available)
 app.MapProfileEndpoints(dbConnString);
 
-// Spotify 검색 (검증용, 비로그인 공개). 트랙 응답에 external_ids.isrc 포함.
-app.MapGet("/spotify/search", async (string? q, string? type, SpotifyClient spotify, CancellationToken ct) =>
-{
-    if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
-    if (string.IsNullOrWhiteSpace(q)) return ApiResults.BadRequest("MISSING_QUERY");
-    try
-    {
-        var types = string.IsNullOrEmpty(type) ? "album,track,artist" : type;
-        var result = await spotify.SearchAsync(q, types, 10, ct);
-        return ApiResults.Ok("OK", result);
-    }
-    catch (HttpRequestException)
-    {
-        return ApiResults.ServiceUnavailable("SPOTIFY_UNAVAILABLE");
-    }
-});
+// 통합 검색 (/search) — Spotify(track/album/artist) + users
+app.MapSearchEndpoints(dbConnString);
 
 app.Run();
 
