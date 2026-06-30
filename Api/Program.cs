@@ -2,6 +2,8 @@ using System.Security.Claims;
 using Api.Auth;
 using Api.Common;
 using Api.Profile;
+using Api.Search;
+using Api.Spotify;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -74,6 +76,10 @@ var webOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<str
 builder.Services.AddCors(o => o.AddPolicy("web", p =>
     p.WithOrigins(webOrigins).AllowAnyHeader().AllowAnyMethod()));
 
+// Spotify 카탈로그 클라이언트 (토큰 캐시 공유 위해 싱글톤)
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<SpotifyClient>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -142,6 +148,9 @@ app.MapGet("/weatherforecast", () =>
 
 // 프로필 조회·프로비저닝 (/me/profile, /me/username-available)
 app.MapProfileEndpoints(dbConnString);
+
+// 통합 검색 (/search) — Spotify(track/album/artist) + users
+app.MapSearchEndpoints(dbConnString);
 
 app.Run();
 
