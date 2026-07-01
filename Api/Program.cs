@@ -174,6 +174,9 @@ app.MapReportEndpoints(dbConnString);
 // 팔로우 (/me/follows, /users/{username}/followers·following) — NON-25
 app.MapFollowEndpoints(dbConnString);
 
+// 알림 (/me/notifications) — NON-26
+app.MapNotificationEndpoints(dbConnString);
+
 // 계정 설정 (/me/avatar, /me/username, /me/account, /media/avatar) — NON-30
 app.MapAccountEndpoints(dbConnString);
 

@@ -33,7 +33,8 @@ public static class FollowEndpoints
                     "insert into public.follows (follower_id, following_id) values (@me, @t) on conflict do nothing", conn);
                 cmd.Parameters.AddWithValue("me", meId);
                 cmd.Parameters.AddWithValue("t", targetId);
-                await cmd.ExecuteNonQueryAsync();
+                if (await cmd.ExecuteNonQueryAsync() > 0) // 신규 팔로우만 알림
+                    await Notifications.CreateAsync(conn, targetId, meId, "follow", null);
                 return ApiResults.Ok("OK");
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }

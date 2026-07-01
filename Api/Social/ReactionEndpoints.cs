@@ -37,16 +37,26 @@ public static class ReactionEndpoints
                     del.Parameters.AddWithValue("val", req.Value!);
                     if (await del.ExecuteNonQueryAsync() == 0)
                     {
-                        await using var up = new NpgsqlCommand(
+                        await using (var up = new NpgsqlCommand(
                             """
                             insert into public.review_reactions (rating_id, user_id, value)
                             values (@rid, @uid, @val)
                             on conflict (rating_id, user_id) do update set value = excluded.value
-                            """, conn);
-                        up.Parameters.AddWithValue("rid", rid);
-                        up.Parameters.AddWithValue("uid", uid);
-                        up.Parameters.AddWithValue("val", req.Value!);
-                        await up.ExecuteNonQueryAsync();
+                            """, conn))
+                        {
+                            up.Parameters.AddWithValue("rid", rid);
+                            up.Parameters.AddWithValue("uid", uid);
+                            up.Parameters.AddWithValue("val", req.Value!);
+                            await up.ExecuteNonQueryAsync();
+                        }
+                        if (req.Value == "like") // 좋아요 전환 → 리뷰 작성자에게 알림(자기 좋아요는 헬퍼가 스킵)
+                        {
+                            await using var author = new NpgsqlCommand(
+                                "select user_id from public.ratings where id = @rid", conn);
+                            author.Parameters.AddWithValue("rid", rid);
+                            if (await author.ExecuteScalarAsync() is Guid authorId)
+                                await Notifications.CreateAsync(conn, authorId, uid, "review_like", rid.ToString());
+                        }
                     }
                 }
 
