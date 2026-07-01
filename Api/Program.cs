@@ -164,6 +164,9 @@ app.MapSearchEndpoints(dbConnString);
 // 앨범/곡 상세 (/detail/track, /detail/album) — Spotify 라이브 + 평점/리뷰 (NON-6)
 app.MapDetailEndpoints(dbConnString);
 
+// 아티스트 상세 (/artist/{id}) — 공개, Spotify + 커뮤니티 평가 배지 (NON-13)
+app.MapArtistEndpoints(dbConnString);
+
 // 평점·리뷰 등록/수정/삭제 (/me/ratings) — 로그인 (NON-7)
 app.MapRatingEndpoints(dbConnString);
 
