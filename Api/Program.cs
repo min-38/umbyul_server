@@ -3,6 +3,7 @@ using Api.Account;
 using Api.Auth;
 using Api.Common;
 using Api.Detail;
+using Api.Home;
 using Api.Profile;
 using Api.Ratings;
 using Api.Search;
@@ -186,6 +187,9 @@ app.MapNotificationEndpoints(dbConnString);
 
 // 계정 설정 (/me/avatar, /me/username, /me/account, /media/avatar) — NON-30
 app.MapAccountEndpoints(dbConnString);
+
+// 홈 피드 (/home) — 공개(옵셔널 인증), DB만 조회 (NON-43)
+app.MapHomeEndpoints(dbConnString);
 
 app.Run();
 
