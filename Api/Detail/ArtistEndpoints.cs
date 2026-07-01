@@ -19,35 +19,44 @@ public static class ArtistEndpoints
             if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
 
             // Spotify 카탈로그(헤더 + 앨범 + 수록곡)는 호출이 많아 15분 캐시 → 반복 로드 시 429 방지.
-            // 평가/리뷰는 캐시하지 않고 매번 fresh 조회.
-            ArtistCatalog? catalog;
-            try
-            {
-                catalog = await cache.GetOrCreateAsync($"artist-catalog:{id}", async entry =>
-                {
-                    var aj = await spotify.GetAsync($"artists/{id}", ct);
-                    if (aj is null) { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30); return null; }
+            // 평가/리뷰는 캐시하지 않고 매번 fresh. 카탈로그 로드 실패(429 등)는 catalogError로 구분해
+            // 프론트가 빈 화면 대신 "통신 오류"를 표시하게 한다.
+            var cacheKey = $"artist-catalog:{id}";
+            var catalog = cache.Get<ArtistCatalog>(cacheKey);
+            var catalogError = false;
 
-                    string sid, name, url;
-                    string? img;
-                    using (var doc = JsonDocument.Parse(aj))
-                    {
-                        var root = doc.RootElement;
-                        sid = Str(root, "id") ?? id;
-                        name = Str(root, "name") ?? "";
-                        img = FirstImage(root);
-                        url = root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "";
-                    }
+            if (catalog is null)
+            {
+                string? aj;
+                try { aj = await spotify.GetAsync($"artists/{id}", ct); }
+                catch (HttpRequestException) { return ApiResults.ServiceUnavailable("SPOTIFY_UNAVAILABLE"); }
+                if (aj is null) return ApiResults.NotFound("ARTIST_NOT_FOUND");
+
+                string sid, name, url;
+                string? img;
+                using (var doc = JsonDocument.Parse(aj))
+                {
+                    var root = doc.RootElement;
+                    sid = Str(root, "id") ?? id;
+                    name = Str(root, "name") ?? "";
+                    img = FirstImage(root);
+                    url = root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "";
+                }
+
+                try
+                {
                     var loadedAlbums = await LoadAlbumsAsync(spotify, id, ct);
                     var loadedTracks = await LoadTracksAsync(spotify, loadedAlbums.Select(a => a.SpotifyId).ToList(), ct);
-                    // 앨범이 비면(대개 일시적 429) 오래 캐시하지 않음.
-                    entry.AbsoluteExpirationRelativeToNow =
-                        loadedAlbums.Count == 0 ? TimeSpan.FromSeconds(15) : TimeSpan.FromMinutes(15);
-                    return new ArtistCatalog(sid, name, img, url, loadedAlbums, loadedTracks);
-                });
+                    catalog = new ArtistCatalog(sid, name, img, url, loadedAlbums, loadedTracks);
+                    cache.Set(cacheKey, catalog, TimeSpan.FromMinutes(15));
+                }
+                catch (HttpRequestException)
+                {
+                    // 헤더는 있으나 앨범/수록곡 로드 실패(429 등) → 에러 상태로 헤더만. 캐시 안 함(다음에 재시도).
+                    catalog = new ArtistCatalog(sid, name, img, url, [], []);
+                    catalogError = true;
+                }
             }
-            catch (HttpRequestException) { return ApiResults.ServiceUnavailable("SPOTIFY_UNAVAILABLE"); }
-            if (catalog is null) return ApiResults.NotFound("ARTIST_NOT_FOUND");
 
             var albums = catalog.Albums;
             var albumTracks = catalog.AlbumTracks;
@@ -100,7 +109,8 @@ public static class ArtistEndpoints
                 totalRatings,
                 ratedTracks,
                 ratedAlbums,
-                recentReviews);
+                recentReviews,
+                catalogError);
 
             return ApiResults.Ok("OK", detail);
         });
@@ -129,8 +139,20 @@ public static class ArtistEndpoints
         var offset = 0;
         for (var page = 0; page < 5 && offset < 50; page++)
         {
-            var items = await SafeParse(spotify,
-                $"artists/{id}/albums?include_groups=album,single&limit=10&offset={offset}", ParseAlbums, ct);
+            var path = $"artists/{id}/albums?include_groups=album,single&limit=10&offset={offset}";
+            List<ArtistAlbum> items;
+            if (page == 0)
+            {
+                // 첫 페이지 실패(429 등)는 예외로 전파 → 호출부가 카탈로그 로드 실패로 구분.
+                var json = await spotify.GetAsync(path, ct);
+                if (json is null) break;
+                using var doc = JsonDocument.Parse(json);
+                items = ParseAlbums(doc.RootElement);
+            }
+            else
+            {
+                items = await SafeParse(spotify, path, ParseAlbums, ct); // 이후 페이지는 best-effort
+            }
             if (items.Count == 0) break;
             all.AddRange(items);
             offset += items.Count;
@@ -267,4 +289,5 @@ public sealed record ArtistDetail(
     string SpotifyId, string Name, string? ImageUrl, string SpotifyUrl,
     int RatedCount, int TotalRatings,
     IReadOnlyList<ArtistRatedTrack> RatedTracks,
-    IReadOnlyList<ArtistAlbum> Albums, IReadOnlyList<ArtistReview> RecentReviews);
+    IReadOnlyList<ArtistAlbum> Albums, IReadOnlyList<ArtistReview> RecentReviews,
+    bool CatalogError);
