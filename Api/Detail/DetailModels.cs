@@ -20,7 +20,8 @@ public sealed record ReviewItem(
     DateTimeOffset CreatedAt,
     int LikeCount,
     int DislikeCount,
-    string? MyReaction); // "like" | "dislike" | null (로그인 시 내 반응)
+    string? MyReaction, // "like" | "dislike" | null (로그인 시 내 반응)
+    int CommentCount); // 리뷰 댓글 수 (NON-36)
 
 // 장르: Spotify 앱 토큰으론 아티스트 genres가 안 내려와 제외(2024 메타데이터 축소, 실측 확인).
 // 레이블: 앨범 label 직접 필드도 없어 copyrights(℗/©) 텍스트로 대체.

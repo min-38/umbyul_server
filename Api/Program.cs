@@ -171,6 +171,9 @@ app.MapRatingEndpoints(dbConnString);
 app.MapReactionEndpoints(dbConnString);
 app.MapReportEndpoints(dbConnString);
 
+// 리뷰 댓글 (/detail/comments/{id} 공개, /me/comments 작성·삭제) — NON-36
+app.MapCommentEndpoints(dbConnString);
+
 // 팔로우 (/me/follows, /users/{username}/followers·following) — NON-25
 app.MapFollowEndpoints(dbConnString);
 
