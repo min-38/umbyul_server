@@ -83,6 +83,7 @@ builder.Services.AddCors(o => o.AddPolicy("web", p =>
 
 // Spotify 카탈로그 클라이언트 (토큰 캐시 공유 위해 싱글톤)
 builder.Services.AddHttpClient();
+builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 

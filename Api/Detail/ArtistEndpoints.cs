@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Api.Common;
 using Api.Spotify;
+using Microsoft.Extensions.Caching.Memory;
 using Npgsql;
 
 namespace Api.Detail;
@@ -13,22 +14,44 @@ public static class ArtistEndpoints
 {
     public static void MapArtistEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/artist/{id}", async (string id, SpotifyClient spotify, CancellationToken ct) =>
+        app.MapGet("/artist/{id}", async (string id, SpotifyClient spotify, IMemoryCache cache, CancellationToken ct) =>
         {
             if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
 
-            string? artistJson;
-            try { artistJson = await spotify.GetAsync($"artists/{id}", ct); }
+            // Spotify 카탈로그(헤더 + 앨범 + 수록곡)는 호출이 많아 15분 캐시 → 반복 로드 시 429 방지.
+            // 평가/리뷰는 캐시하지 않고 매번 fresh 조회.
+            ArtistCatalog? catalog;
+            try
+            {
+                catalog = await cache.GetOrCreateAsync($"artist-catalog:{id}", async entry =>
+                {
+                    var aj = await spotify.GetAsync($"artists/{id}", ct);
+                    if (aj is null) { entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30); return null; }
+
+                    string sid, name, url;
+                    string? img;
+                    using (var doc = JsonDocument.Parse(aj))
+                    {
+                        var root = doc.RootElement;
+                        sid = Str(root, "id") ?? id;
+                        name = Str(root, "name") ?? "";
+                        img = FirstImage(root);
+                        url = root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "";
+                    }
+                    var loadedAlbums = await LoadAlbumsAsync(spotify, id, ct);
+                    var loadedTracks = await LoadTracksAsync(spotify, loadedAlbums.Select(a => a.SpotifyId).ToList(), ct);
+                    // 앨범이 비면(대개 일시적 429) 오래 캐시하지 않음.
+                    entry.AbsoluteExpirationRelativeToNow =
+                        loadedAlbums.Count == 0 ? TimeSpan.FromSeconds(15) : TimeSpan.FromMinutes(15);
+                    return new ArtistCatalog(sid, name, img, url, loadedAlbums, loadedTracks);
+                });
+            }
             catch (HttpRequestException) { return ApiResults.ServiceUnavailable("SPOTIFY_UNAVAILABLE"); }
-            if (artistJson is null) return ApiResults.NotFound("ARTIST_NOT_FOUND");
+            if (catalog is null) return ApiResults.NotFound("ARTIST_NOT_FOUND");
 
-            var albums = await LoadAlbumsAsync(spotify, id, ct);
+            var albums = catalog.Albums;
+            var albumTracks = catalog.AlbumTracks;
             var albumIds = albums.Select(a => a.SpotifyId).ToList();
-
-            // 트랙 평가/리뷰도 반영하려면 수록곡이 필요(top-tracks는 403). 앨범↔트랙 매핑 유지:
-            //  - 리뷰 대상명·조회 세트에 트랙 포함
-            //  - 앨범 배지는 "레코드 반응"(앨범 자체 + 수록곡 평가 합산)으로 산출
-            var albumTracks = await LoadTracksAsync(spotify, albumIds, ct);
             var allTracks = albumTracks.Values.SelectMany(x => x).ToList();
             var allIds = albumIds.Concat(allTracks.Select(x => x.Id)).Distinct().ToArray();
 
@@ -68,14 +91,11 @@ public static class ArtistEndpoints
             ratedTracks = ratedTracks
                 .OrderByDescending(t => t.Rating.Average).ThenByDescending(t => t.Rating.Count).ToList();
 
-            using var doc = JsonDocument.Parse(artistJson);
-            var root = doc.RootElement;
-
             var detail = new ArtistDetail(
-                Str(root, "id") ?? id,
-                Str(root, "name") ?? "",
-                FirstImage(root),
-                root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "",
+                catalog.SpotifyId,
+                catalog.Name,
+                catalog.ImageUrl,
+                catalog.SpotifyUrl,
                 ratedCount,
                 totalRatings,
                 ratedTracks,
@@ -134,13 +154,23 @@ public static class ArtistEndpoints
         return list;
     }
 
-    // 앨범별 수록곡(id·이름) 수집. 앨범당 1콜, 병렬. 동시성 상한(과도한 호출·레이트리밋 방지)으로 앨범 수 제한.
+    // 앨범별 수록곡(id·이름) 수집. 앨범당 1콜. Spotify 429(레이트리밋) 방지를 위해
+    // 대상 앨범 수를 제한하고 동시성도 스로틀(한 번에 몰아치지 않게).
+    private const int TrackFetchAlbumCap = 12;
+    private const int TrackFetchConcurrency = 5;
+
     private static async Task<Dictionary<string, List<(string Id, string Name)>>> LoadTracksAsync(
         SpotifyClient spotify, IReadOnlyList<string> albumIds, CancellationToken ct)
     {
-        var target = albumIds.Take(30).ToList();
-        var tasks = target.Select(aid => SafeParse(spotify, $"albums/{aid}/tracks?limit=50", ParseTracks, ct));
-        var results = await Task.WhenAll(tasks);
+        var target = albumIds.Take(TrackFetchAlbumCap).ToList();
+        using var gate = new SemaphoreSlim(TrackFetchConcurrency);
+        async Task<List<(string, string)>> Fetch(string aid)
+        {
+            await gate.WaitAsync(ct);
+            try { return await SafeParse(spotify, $"albums/{aid}/tracks?limit=50", ParseTracks, ct); }
+            finally { gate.Release(); }
+        }
+        var results = await Task.WhenAll(target.Select(Fetch));
         var map = new Dictionary<string, List<(string Id, string Name)>>();
         for (var i = 0; i < target.Count; i++) map[target[i]] = results[i];
         return map;
@@ -220,6 +250,11 @@ public static class ArtistEndpoints
     private static string? Str(JsonElement el, string prop) =>
         el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }
+
+// 서버 내부 캐시용(클라이언트 응답 아님): Spotify 카탈로그 스냅샷.
+internal sealed record ArtistCatalog(
+    string SpotifyId, string Name, string? ImageUrl, string SpotifyUrl,
+    List<ArtistAlbum> Albums, Dictionary<string, List<(string Id, string Name)>> AlbumTracks);
 
 public sealed record RatingBadge(double Average, int Count);
 public sealed record ArtistAlbum(
