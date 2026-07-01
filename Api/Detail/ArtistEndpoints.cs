@@ -23,10 +23,22 @@ public static class ArtistEndpoints
             if (artistJson is null) return ApiResults.NotFound("ARTIST_NOT_FOUND");
 
             var albums = await LoadAlbumsAsync(spotify, id, ct);
+            var albumIds = albums.Select(a => a.SpotifyId).ToList();
 
-            var ids = albums.Select(a => a.SpotifyId).ToArray();
-            var badges = await LoadBadgesAsync(dbConnString, ids, ct);
-            var recentReviews = await LoadRecentReviewsAsync(dbConnString, ids, ct);
+            // 트랙 평가/리뷰도 아티스트 페이지에 반영하려면 수록곡이 필요(top-tracks는 403).
+            // → 각 앨범 수록곡을 병렬로 모아 조회 세트에 포함. 이름 맵은 리뷰의 대상명 표시용.
+            var tracks = await LoadTracksAsync(spotify, albumIds, ct);
+            var allIds = albumIds.Concat(tracks.Select(x => x.Id)).Distinct().ToArray();
+
+            var nameMap = new Dictionary<string, string>();
+            foreach (var a in albums) nameMap[a.SpotifyId] = a.Name;
+            foreach (var (tid, tname) in tracks) nameMap[tid] = tname;
+
+            var badges = await LoadBadgesAsync(dbConnString, allIds, ct);
+            var recentReviews = (await LoadRecentReviewsAsync(dbConnString, allIds, ct))
+                .Select(r => r with { TargetName = nameMap.GetValueOrDefault(r.TargetSpotifyId, "") })
+                .ToList();
+            var totalRatings = badges.Values.Sum(b => b.Count);
 
             using var doc = JsonDocument.Parse(artistJson);
             var root = doc.RootElement;
@@ -36,6 +48,8 @@ public static class ArtistEndpoints
                 Str(root, "name") ?? "",
                 FirstImage(root),
                 root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "",
+                badges.Count,
+                totalRatings,
                 albums.Select(a => a with { Rating = badges.GetValueOrDefault(a.SpotifyId) }).ToList(),
                 recentReviews);
 
@@ -91,6 +105,25 @@ public static class ArtistEndpoints
         return list;
     }
 
+    // 앨범 수록곡(id·이름) 수집. 앨범당 1콜, 병렬. 동시성 상한(과도한 호출·레이트리밋 방지)으로 앨범 수 제한.
+    private static async Task<List<(string Id, string Name)>> LoadTracksAsync(
+        SpotifyClient spotify, IReadOnlyList<string> albumIds, CancellationToken ct)
+    {
+        var tasks = albumIds.Take(30)
+            .Select(aid => SafeParse(spotify, $"albums/{aid}/tracks?limit=50", ParseTracks, ct));
+        var results = await Task.WhenAll(tasks);
+        return results.SelectMany(x => x).ToList();
+    }
+
+    private static List<(string Id, string Name)> ParseTracks(JsonElement root)
+    {
+        var list = new List<(string, string)>();
+        if (!root.TryGetProperty("items", out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+        foreach (var it in arr.EnumerateArray())
+            if (Str(it, "id") is { } tid) list.Add((tid, Str(it, "name") ?? ""));
+        return list;
+    }
+
     // spotify_id → (평균, 개수). 구 평점(target_spotify_id null)은 매칭 안 됨(허용).
     private static async Task<Dictionary<string, RatingBadge>> LoadBadgesAsync(
         string? dbConnString, string[] ids, CancellationToken ct)
@@ -142,7 +175,7 @@ public static class ArtistEndpoints
                 list.Add(new ArtistReview(
                     r.GetString(0), r.GetString(1), r.GetString(2),
                     r.IsDBNull(3) ? null : r.GetString(3), r.GetDecimal(4), r.GetString(5),
-                    r.GetFieldValue<DateTimeOffset>(6)));
+                    r.GetFieldValue<DateTimeOffset>(6), ""));
         }
         catch (NpgsqlException) { /* 리뷰 피드는 없어도 페이지는 살린다 */ }
         return list;
@@ -162,7 +195,8 @@ public sealed record ArtistAlbum(
     string SpotifyId, string Name, string? ImageUrl, string? ReleaseDate, string AlbumType, RatingBadge? Rating);
 public sealed record ArtistReview(
     string TargetType, string TargetSpotifyId, string Username, string? AvatarUrl,
-    decimal Score, string Body, DateTimeOffset CreatedAt);
+    decimal Score, string Body, DateTimeOffset CreatedAt, string TargetName);
 public sealed record ArtistDetail(
     string SpotifyId, string Name, string? ImageUrl, string SpotifyUrl,
+    int RatedCount, int TotalRatings,
     IReadOnlyList<ArtistAlbum> Albums, IReadOnlyList<ArtistReview> RecentReviews);
