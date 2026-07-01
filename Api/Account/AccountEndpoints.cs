@@ -18,6 +18,7 @@ public static class AccountEndpoints
     };
 
     public sealed record UsernameRequest(string? Username);
+    public sealed record LocaleRequest(string? Locale);
 
     public static void MapAccountEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -84,6 +85,25 @@ public static class AccountEndpoints
                 return ApiResults.Ok("OK", new { username = body.Username });
             }
             catch (PostgresException ex) when (ex.SqlState == "23505") { return ApiResults.Conflict("USERNAME_TAKEN"); }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
+        // 표시 언어(locale) 저장 — 회원의 기기 무관 언어 설정(NON-39)
+        me.MapPost("/locale", async (LocaleRequest body, ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            if (body.Locale is not ("ko" or "en")) return ApiResults.BadRequest("INVALID_LOCALE");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand("update public.users set locale = @l where id = @id", conn);
+                cmd.Parameters.AddWithValue("l", body.Locale);
+                cmd.Parameters.AddWithValue("id", uid);
+                await cmd.ExecuteNonQueryAsync();
+                return ApiResults.Ok("OK", new { locale = body.Locale });
+            }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 

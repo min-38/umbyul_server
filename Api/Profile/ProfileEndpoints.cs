@@ -55,7 +55,7 @@ public static class ProfileEndpoints
             await using var conn = new NpgsqlConnection(dbConnString);
             await conn.OpenAsync();
             await using var cmd = new NpgsqlCommand(
-                "select username, country, avatar_url, is_artist, created_at from public.users where id = @id", conn);
+                "select username, country, avatar_url, is_artist, created_at, locale from public.users where id = @id", conn);
             cmd.Parameters.AddWithValue("id", Guid.Parse(id));
             await using var r = await cmd.ExecuteReaderAsync();
             if (!await r.ReadAsync()) return ApiResults.NotFound("PROFILE_NOT_FOUND");
@@ -67,6 +67,7 @@ public static class ProfileEndpoints
                 avatarUrl = r.IsDBNull(2) ? null : r.GetString(2),
                 isArtist = r.GetBoolean(3),
                 createdAt = r.GetFieldValue<DateTimeOffset>(4),
+                locale = r.IsDBNull(5) ? null : r.GetString(5),
             });
         });
 
