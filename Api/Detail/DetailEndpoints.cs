@@ -50,9 +50,15 @@ public static class DetailEndpoints
             var targetId = a.Upc ?? a.SpotifyId;
             var (summary, reviews) = await LoadReviewsAsync(dbConnString, "album", targetId, Me(user), ct);
 
+            // 수록곡별 평점(트랙리스트에 별점 표시). target_spotify_id로 곡 평가 집계.
+            var trackRatings = await LoadTrackRatingsAsync(dbConnString, a.Tracks.Select(t => t.Id).ToList(), ct);
+            var tracks = a.Tracks
+                .Select(t => trackRatings.TryGetValue(t.Id, out var r) ? t with { Rating = r } : t)
+                .ToList();
+
             return ApiResults.Ok("OK", new AlbumDetail(
                 a.SpotifyId, a.Name, a.SpotifyUrl, a.Artists, a.ImageUrl, a.Upc, targetId, a.ReleaseDate, a.Copyright,
-                a.TotalTracks, a.Tracks, summary, reviews));
+                a.TotalTracks, tracks, summary, reviews));
         });
     }
 
@@ -72,6 +78,32 @@ public static class DetailEndpoints
     // 토큰이 있으면 내 user id, 없으면 null. 상세는 공개라 [Authorize] 아님 → 옵셔널.
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
+
+    // 수록곡 spotify_id → 평균·개수. 구 평점(target_spotify_id null)은 매칭 안 됨(허용).
+    private static async Task<Dictionary<string, RatingSummary>> LoadTrackRatingsAsync(
+        string? dbConnString, IReadOnlyList<string> trackIds, CancellationToken ct)
+    {
+        var map = new Dictionary<string, RatingSummary>();
+        if (dbConnString is null || trackIds.Count == 0) return map;
+        try
+        {
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                """
+                select target_spotify_id, round(avg(score), 2)::float8, count(*)
+                from public.ratings
+                where target_type = 'track' and target_spotify_id = any(@ids)
+                group by target_spotify_id
+                """, conn);
+            cmd.Parameters.AddWithValue("ids", trackIds.ToArray());
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                map[r.GetString(0)] = new RatingSummary(r.GetDouble(1), (int)r.GetInt64(2));
+        }
+        catch (NpgsqlException) { /* 트랙 평점은 없어도 트랙리스트는 살린다 */ }
+        return map;
+    }
 
     // 우리 DB의 평점/리뷰 + 평균 + 리뷰별 좋아요/싫어요 집계, me 의 반응(NON-23).
     private static async Task<(RatingSummary, IReadOnlyList<ReviewItem>)> LoadReviewsAsync(
