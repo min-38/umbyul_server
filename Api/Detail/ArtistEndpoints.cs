@@ -25,20 +25,37 @@ public static class ArtistEndpoints
             var albums = await LoadAlbumsAsync(spotify, id, ct);
             var albumIds = albums.Select(a => a.SpotifyId).ToList();
 
-            // 트랙 평가/리뷰도 아티스트 페이지에 반영하려면 수록곡이 필요(top-tracks는 403).
-            // → 각 앨범 수록곡을 병렬로 모아 조회 세트에 포함. 이름 맵은 리뷰의 대상명 표시용.
-            var tracks = await LoadTracksAsync(spotify, albumIds, ct);
-            var allIds = albumIds.Concat(tracks.Select(x => x.Id)).Distinct().ToArray();
+            // 트랙 평가/리뷰도 반영하려면 수록곡이 필요(top-tracks는 403). 앨범↔트랙 매핑 유지:
+            //  - 리뷰 대상명·조회 세트에 트랙 포함
+            //  - 앨범 배지는 "레코드 반응"(앨범 자체 + 수록곡 평가 합산)으로 산출
+            var albumTracks = await LoadTracksAsync(spotify, albumIds, ct);
+            var allTracks = albumTracks.Values.SelectMany(x => x).ToList();
+            var allIds = albumIds.Concat(allTracks.Select(x => x.Id)).Distinct().ToArray();
 
             var nameMap = new Dictionary<string, string>();
             foreach (var a in albums) nameMap[a.SpotifyId] = a.Name;
-            foreach (var (tid, tname) in tracks) nameMap[tid] = tname;
+            foreach (var (tid, tname) in allTracks) nameMap[tid] = tname;
 
             var badges = await LoadBadgesAsync(dbConnString, allIds, ct);
             var recentReviews = (await LoadRecentReviewsAsync(dbConnString, allIds, ct))
                 .Select(r => r with { TargetName = nameMap.GetValueOrDefault(r.TargetSpotifyId, "") })
                 .ToList();
+
+            // 앨범 레코드 점수: {앨범 id} ∪ {수록곡 id}의 평가를 가중평균(avg*count 합 / count 합).
+            RatingBadge? RecordRating(string albumId)
+            {
+                double sum = 0;
+                var count = 0;
+                if (badges.TryGetValue(albumId, out var ab)) { sum += ab.Average * ab.Count; count += ab.Count; }
+                if (albumTracks.TryGetValue(albumId, out var ts))
+                    foreach (var (tid, _) in ts)
+                        if (badges.TryGetValue(tid, out var tb)) { sum += tb.Average * tb.Count; count += tb.Count; }
+                return count > 0 ? new RatingBadge(Math.Round(sum / count, 2), count) : null;
+            }
+
+            var ratedAlbums = albums.Select(a => a with { Rating = RecordRating(a.SpotifyId) }).ToList();
             var totalRatings = badges.Values.Sum(b => b.Count);
+            var ratedCount = ratedAlbums.Count(a => a.Rating is not null);
 
             using var doc = JsonDocument.Parse(artistJson);
             var root = doc.RootElement;
@@ -48,9 +65,9 @@ public static class ArtistEndpoints
                 Str(root, "name") ?? "",
                 FirstImage(root),
                 root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "",
-                badges.Count,
+                ratedCount,
                 totalRatings,
-                albums.Select(a => a with { Rating = badges.GetValueOrDefault(a.SpotifyId) }).ToList(),
+                ratedAlbums,
                 recentReviews);
 
             return ApiResults.Ok("OK", detail);
@@ -105,14 +122,16 @@ public static class ArtistEndpoints
         return list;
     }
 
-    // 앨범 수록곡(id·이름) 수집. 앨범당 1콜, 병렬. 동시성 상한(과도한 호출·레이트리밋 방지)으로 앨범 수 제한.
-    private static async Task<List<(string Id, string Name)>> LoadTracksAsync(
+    // 앨범별 수록곡(id·이름) 수집. 앨범당 1콜, 병렬. 동시성 상한(과도한 호출·레이트리밋 방지)으로 앨범 수 제한.
+    private static async Task<Dictionary<string, List<(string Id, string Name)>>> LoadTracksAsync(
         SpotifyClient spotify, IReadOnlyList<string> albumIds, CancellationToken ct)
     {
-        var tasks = albumIds.Take(30)
-            .Select(aid => SafeParse(spotify, $"albums/{aid}/tracks?limit=50", ParseTracks, ct));
+        var target = albumIds.Take(30).ToList();
+        var tasks = target.Select(aid => SafeParse(spotify, $"albums/{aid}/tracks?limit=50", ParseTracks, ct));
         var results = await Task.WhenAll(tasks);
-        return results.SelectMany(x => x).ToList();
+        var map = new Dictionary<string, List<(string Id, string Name)>>();
+        for (var i = 0; i < target.Count; i++) map[target[i]] = results[i];
+        return map;
     }
 
     private static List<(string Id, string Name)> ParseTracks(JsonElement root)
