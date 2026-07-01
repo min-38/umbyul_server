@@ -13,6 +13,8 @@ public static class NotificationEndpoints
 
     public sealed record NotificationList(IReadOnlyList<NotificationItem> Items, int UnreadCount);
 
+    public sealed record NotificationPrefs(bool Master, bool Follow, bool ReviewLike);
+
     public static void MapNotificationEndpoints(this WebApplication app, string? dbConnString)
     {
         var me = app.MapGroup("/me").RequireAuthorization();
@@ -104,6 +106,53 @@ public static class NotificationEndpoints
                 await using var cmd = new NpgsqlCommand(
                     "delete from public.notifications where recipient_id = @me", conn);
                 cmd.Parameters.AddWithValue("me", uid);
+                await cmd.ExecuteNonQueryAsync();
+                return ApiResults.Ok("OK");
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
+        // 알림 설정 조회 (없으면 기본 on)
+        me.MapGet("/notification-prefs", async (ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "select master, follow, review_like from public.notification_prefs where user_id = @me", conn);
+                cmd.Parameters.AddWithValue("me", uid);
+                await using var rd = await cmd.ExecuteReaderAsync();
+                var prefs = await rd.ReadAsync()
+                    ? new NotificationPrefs(rd.GetBoolean(0), rd.GetBoolean(1), rd.GetBoolean(2))
+                    : new NotificationPrefs(true, true, true);
+                return ApiResults.Ok("OK", prefs);
+            }
+            catch (NpgsqlException) { return ApiResults.Ok("OK", new NotificationPrefs(true, true, true)); }
+        });
+
+        // 알림 설정 저장(upsert)
+        me.MapPut("/notification-prefs", async (NotificationPrefs req, ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    """
+                    insert into public.notification_prefs (user_id, master, follow, review_like, updated_at)
+                    values (@me, @m, @f, @rl, now())
+                    on conflict (user_id) do update
+                        set master = @m, follow = @f, review_like = @rl, updated_at = now()
+                    """, conn);
+                cmd.Parameters.AddWithValue("me", uid);
+                cmd.Parameters.AddWithValue("m", req.Master);
+                cmd.Parameters.AddWithValue("f", req.Follow);
+                cmd.Parameters.AddWithValue("rl", req.ReviewLike);
                 await cmd.ExecuteNonQueryAsync();
                 return ApiResults.Ok("OK");
             }

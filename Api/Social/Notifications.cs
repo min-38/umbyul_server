@@ -12,9 +12,21 @@ public static class Notifications
         if (recipientId == actorId) return;
         try
         {
+            // 수신자 알림 설정 확인 후 적재. 설정 row 없으면 기본 on → 적재.
+            // master=false 이거나 해당 종류 off 면 적재하지 않음.
             await using var cmd = new NpgsqlCommand(
-                "insert into public.notifications (recipient_id, actor_id, type, target_id) values (@r, @a, @t, @tid)",
-                conn);
+                """
+                insert into public.notifications (recipient_id, actor_id, type, target_id)
+                select @r, @a, @t, @tid
+                where not exists (
+                    select 1 from public.notification_prefs p
+                    where p.user_id = @r and (
+                        p.master = false
+                        or (@t = 'follow' and p.follow = false)
+                        or (@t = 'review_like' and p.review_like = false)
+                    )
+                )
+                """, conn);
             cmd.Parameters.AddWithValue("r", recipientId);
             cmd.Parameters.AddWithValue("a", actorId);
             cmd.Parameters.AddWithValue("t", type);
