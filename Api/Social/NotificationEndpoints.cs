@@ -112,6 +112,26 @@ public static class NotificationEndpoints
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 
+        // 개별 삭제
+        me.MapDelete("/notifications/{id}", async (string id, ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            if (!Guid.TryParse(id, out var nid)) return ApiResults.BadRequest("INVALID_TARGET");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "delete from public.notifications where id = @id and recipient_id = @me", conn);
+                cmd.Parameters.AddWithValue("id", nid);
+                cmd.Parameters.AddWithValue("me", uid);
+                await cmd.ExecuteNonQueryAsync();
+                return ApiResults.Ok("OK");
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
         // 알림 설정 조회 (없으면 기본 on)
         me.MapGet("/notification-prefs", async (ClaimsPrincipal user) =>
         {
