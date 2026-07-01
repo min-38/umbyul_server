@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Api.Account;
 using Api.Auth;
 using Api.Common;
 using Api.Detail;
@@ -7,6 +8,7 @@ using Api.Ratings;
 using Api.Search;
 using Api.Social;
 using Api.Spotify;
+using Api.Storage;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -82,6 +84,7 @@ builder.Services.AddCors(o => o.AddPolicy("web", p =>
 // Spotify 카탈로그 클라이언트 (토큰 캐시 공유 위해 싱글톤)
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<SpotifyClient>();
+builder.Services.AddSingleton<R2Storage>();
 
 var app = builder.Build();
 
@@ -170,6 +173,9 @@ app.MapReportEndpoints(dbConnString);
 
 // 팔로우 (/me/follows, /users/{username}/followers·following) — NON-25
 app.MapFollowEndpoints(dbConnString);
+
+// 계정 설정 (/me/avatar, /me/username, /me/account, /media/avatar) — NON-30
+app.MapAccountEndpoints(dbConnString);
 
 app.Run();
 
