@@ -91,6 +91,24 @@ public static class NotificationEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+
+        // 모두 지우기
+        me.MapDelete("/notifications", async (ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "delete from public.notifications where recipient_id = @me", conn);
+                cmd.Parameters.AddWithValue("me", uid);
+                await cmd.ExecuteNonQueryAsync();
+                return ApiResults.Ok("OK");
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
     }
 
     private static Guid? Sub(ClaimsPrincipal user) =>
