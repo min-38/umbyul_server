@@ -57,6 +57,17 @@ public static class ArtistEndpoints
             var totalRatings = badges.Values.Sum(b => b.Count);
             var ratedCount = ratedAlbums.Count(a => a.Rating is not null);
 
+            // 평가된 트랙 목록(점수순). 이미지·이름은 앨범 맥락에서 채움.
+            var albumImage = albums.ToDictionary(a => a.SpotifyId, a => a.ImageUrl);
+            var seenTrack = new HashSet<string>();
+            var ratedTracks = new List<ArtistRatedTrack>();
+            foreach (var (albumId, ts) in albumTracks)
+                foreach (var (tid, tname) in ts)
+                    if (seenTrack.Add(tid) && badges.TryGetValue(tid, out var tb))
+                        ratedTracks.Add(new ArtistRatedTrack(tid, tname, albumImage.GetValueOrDefault(albumId), tb));
+            ratedTracks = ratedTracks
+                .OrderByDescending(t => t.Rating.Average).ThenByDescending(t => t.Rating.Count).ToList();
+
             using var doc = JsonDocument.Parse(artistJson);
             var root = doc.RootElement;
 
@@ -67,6 +78,7 @@ public static class ArtistEndpoints
                 root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "",
                 ratedCount,
                 totalRatings,
+                ratedTracks,
                 ratedAlbums,
                 recentReviews);
 
@@ -212,10 +224,12 @@ public static class ArtistEndpoints
 public sealed record RatingBadge(double Average, int Count);
 public sealed record ArtistAlbum(
     string SpotifyId, string Name, string? ImageUrl, string? ReleaseDate, string AlbumType, RatingBadge? Rating);
+public sealed record ArtistRatedTrack(string SpotifyId, string Name, string? ImageUrl, RatingBadge Rating);
 public sealed record ArtistReview(
     string TargetType, string TargetSpotifyId, string Username, string? AvatarUrl,
     decimal Score, string Body, DateTimeOffset CreatedAt, string TargetName);
 public sealed record ArtistDetail(
     string SpotifyId, string Name, string? ImageUrl, string SpotifyUrl,
     int RatedCount, int TotalRatings,
+    IReadOnlyList<ArtistRatedTrack> RatedTracks,
     IReadOnlyList<ArtistAlbum> Albums, IReadOnlyList<ArtistReview> RecentReviews);
