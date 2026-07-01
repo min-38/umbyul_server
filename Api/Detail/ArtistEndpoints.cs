@@ -31,6 +31,7 @@ public static class ArtistEndpoints
             // 등장하는 모든 spotify_id를 모아 우리 평가를 한 번에 조회 → 평가 있는 항목에만 배지.
             var ids = topTracks.Select(t => t.SpotifyId).Concat(albums.Select(a => a.SpotifyId)).ToArray();
             var badges = await LoadBadgesAsync(dbConnString, ids, ct);
+            var recentReviews = await LoadRecentReviewsAsync(dbConnString, ids, ct);
 
             using var doc = JsonDocument.Parse(artistJson);
             var root = doc.RootElement;
@@ -43,7 +44,8 @@ public static class ArtistEndpoints
                 Int(root, "popularity"),
                 root.TryGetProperty("external_urls", out var e) ? Str(e, "spotify") ?? "" : "",
                 topTracks.Select(t => t with { Rating = badges.GetValueOrDefault(t.SpotifyId) }).ToList(),
-                albums.Select(a => a with { Rating = badges.GetValueOrDefault(a.SpotifyId) }).ToList());
+                albums.Select(a => a with { Rating = badges.GetValueOrDefault(a.SpotifyId) }).ToList(),
+                recentReviews);
 
             return ApiResults.Ok("OK", detail);
         });
@@ -118,6 +120,37 @@ public static class ArtistEndpoints
         return map;
     }
 
+    // 이 아티스트 릴리스에 달린 최근 리뷰(본문 있는 것). 이미 모은 spotify_id 세트로 조회.
+    private static async Task<List<ArtistReview>> LoadRecentReviewsAsync(
+        string? dbConnString, string[] ids, CancellationToken ct)
+    {
+        var list = new List<ArtistReview>();
+        if (dbConnString is null || ids.Length == 0) return list;
+        try
+        {
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                """
+                select r.target_type, r.target_spotify_id, u.username, u.avatar_url, r.score, r.review, r.created_at
+                from public.ratings r
+                join public.users u on u.id = r.user_id
+                where r.target_spotify_id = any(@ids) and r.review is not null and r.review <> ''
+                order by r.created_at desc
+                limit 10
+                """, conn);
+            cmd.Parameters.AddWithValue("ids", ids);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                list.Add(new ArtistReview(
+                    r.GetString(0), r.GetString(1), r.GetString(2),
+                    r.IsDBNull(3) ? null : r.GetString(3), r.GetDecimal(4), r.GetString(5),
+                    r.GetFieldValue<DateTimeOffset>(6)));
+        }
+        catch (NpgsqlException) { /* 리뷰 피드는 없어도 페이지는 살린다 */ }
+        return list;
+    }
+
     private static string? FirstImage(JsonElement root) =>
         root.TryGetProperty("images", out var imgs)
         && imgs.ValueKind == JsonValueKind.Array && imgs.GetArrayLength() > 0
@@ -134,6 +167,10 @@ public sealed record RatingBadge(double Average, int Count);
 public sealed record ArtistTrack(string SpotifyId, string Name, string? ImageUrl, RatingBadge? Rating);
 public sealed record ArtistAlbum(
     string SpotifyId, string Name, string? ImageUrl, string? ReleaseDate, string AlbumType, RatingBadge? Rating);
+public sealed record ArtistReview(
+    string TargetType, string TargetSpotifyId, string Username, string? AvatarUrl,
+    decimal Score, string Body, DateTimeOffset CreatedAt);
 public sealed record ArtistDetail(
     string SpotifyId, string Name, string? ImageUrl, int Followers, int Popularity, string SpotifyUrl,
-    IReadOnlyList<ArtistTrack> TopTracks, IReadOnlyList<ArtistAlbum> Albums);
+    IReadOnlyList<ArtistTrack> TopTracks, IReadOnlyList<ArtistAlbum> Albums,
+    IReadOnlyList<ArtistReview> RecentReviews);
