@@ -1,6 +1,8 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Api.Common;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace Api.Ratings;
 
@@ -10,7 +12,7 @@ public static class RatingEndpoints
 {
     public sealed record RatingRequest(
         string? TargetType, string? TargetId, string? SpotifyId, decimal Score, string? Review,
-        string? Name, string? Artist, string? ImageUrl);
+        string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists);
 
     private static string? Trim(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
@@ -38,14 +40,15 @@ public static class RatingEndpoints
                     """
                     insert into public.ratings
                         (user_id, target_type, target_id, target_spotify_id, score, review,
-                         target_name, target_artist, target_image_url)
-                    values (@uid, @tt, @tid, @sid, @score, @review, @name, @artist, @image)
+                         target_name, target_artist, target_image_url, target_artists)
+                    values (@uid, @tt, @tid, @sid, @score, @review, @name, @artist, @image, @artists)
                     on conflict (user_id, target_type, target_id)
                     do update set score = excluded.score, review = excluded.review,
                                   target_spotify_id = excluded.target_spotify_id,
                                   target_name = excluded.target_name,
                                   target_artist = excluded.target_artist,
-                                  target_image_url = excluded.target_image_url
+                                  target_image_url = excluded.target_image_url,
+                                  target_artists = excluded.target_artists
                     """, conn);
                 cmd.Parameters.AddWithValue("uid", Guid.Parse(id));
                 cmd.Parameters.AddWithValue("tt", req.TargetType!);
@@ -56,6 +59,8 @@ public static class RatingEndpoints
                 cmd.Parameters.AddWithValue("name", (object?)Trim(req.Name) ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("artist", (object?)Trim(req.Artist) ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("image", (object?)Trim(req.ImageUrl) ?? DBNull.Value);
+                var artistsJson = req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null;
+                cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)artistsJson ?? DBNull.Value });
                 await cmd.ExecuteNonQueryAsync();
                 return ApiResults.Ok("OK");
             }
