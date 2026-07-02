@@ -10,7 +10,7 @@
         <span class="fw-semibold text-body">@username</span>
         @if (remaining is not null)
         {
-            <span class="ms-2">· 세션 @remaining</span>
+            <span class="ms-2">· 세션 <span class="font-monospace">@remaining</span></span>
         }
     </span>
     <form method="post" action="/auth/logout" class="d-inline">
@@ -46,11 +46,7 @@
             InvokeAsync(() => Nav.NavigateTo("/auth/logout", forceLoad: true));
             return;
         }
-        remaining = left.TotalHours >= 1
-            ? $"{(int)left.TotalHours}시간 {left.Minutes}분"
-            : left.TotalMinutes >= 1
-                ? $"{left.Minutes}분 {left.Seconds}초"
-                : $"{left.Seconds}초";
+        remaining = $"{(int)left.TotalHours:D2}:{left.Minutes:D2}:{left.Seconds:D2}";
         InvokeAsync(StateHasChanged);
     }
 

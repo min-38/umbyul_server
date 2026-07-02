@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var SessionDuration = TimeSpan.FromHours(8); // 관리자 세션 유효기간(고정).
+var SessionDuration = TimeSpan.FromHours(1); // 관리자 세션 유효기간(고정).
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
