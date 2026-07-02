@@ -1,5 +1,4 @@
 ﻿@inherits LayoutComponentBase
-@using Microsoft.AspNetCore.Components.Authorization
 
 <div class="page">
     <div class="sidebar">
@@ -8,14 +7,7 @@
 
     <main>
         <div class="top-row px-4">
-            <AuthorizeView>
-                <Authorized>
-                    <span class="me-3 text-secondary small">@context.User.Identity?.Name</span>
-                    <form method="post" action="/auth/logout" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-outline-secondary">로그아웃</button>
-                    </form>
-                </Authorized>
-            </AuthorizeView>
+            <SessionBar @rendermode="InteractiveServer" />
         </div>
 
         <article class="content px-4">

@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var SessionDuration = TimeSpan.FromHours(8); // 관리자 세션 유효기간(고정).
+
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<AdminDb>();
@@ -16,8 +18,8 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     {
         o.LoginPath = "/login";
         o.AccessDeniedPath = "/login";
-        o.ExpireTimeSpan = TimeSpan.FromHours(8);
-        o.SlidingExpiration = true;
+        o.ExpireTimeSpan = SessionDuration;
+        o.SlidingExpiration = false; // 고정 만료 → 헤더 잔여시간 카운트다운을 정확히.
     });
 builder.Services.AddAuthorization();
 builder.Services.AddCascadingAuthenticationState();
@@ -55,10 +57,16 @@ app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db) =>
     var admin = await db.GetAdminAuthAsync(username);
     if (admin is { } a && BCrypt.Net.BCrypt.Verify(password, a.Hash))
     {
+        var expiresAt = DateTimeOffset.UtcNow.Add(SessionDuration);
         var identity = new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, a.Id.ToString()), new Claim(ClaimTypes.Name, a.Username)],
+            [
+                new Claim(ClaimTypes.NameIdentifier, a.Id.ToString()),
+                new Claim(ClaimTypes.Name, a.Username),
+                new Claim("session_exp", expiresAt.ToUnixTimeSeconds().ToString()), // 헤더 잔여시간·자동 로그아웃용
+            ],
             CookieAuthenticationDefaults.AuthenticationScheme);
-        await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+        await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity),
+            new AuthenticationProperties { ExpiresUtc = expiresAt });
         await db.LogAsync(new Actor(a.Id, a.Username), "login", null, null);
         return Results.Redirect("/");
     }

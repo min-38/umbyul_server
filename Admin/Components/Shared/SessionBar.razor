@@ -1,0 +1,62 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@implements IDisposable
+@inject AuthenticationStateProvider AuthState
+@inject NavigationManager Nav
+
+@* 헤더용: 로그인 계정 + 세션 잔여시간. 만료 도달 시 자동 로그아웃(NON-49). *@
+@if (username is not null)
+{
+    <span class="me-3 small text-secondary">
+        <span class="fw-semibold text-body">@username</span>
+        @if (remaining is not null)
+        {
+            <span class="ms-2">· 세션 @remaining</span>
+        }
+    </span>
+    <form method="post" action="/auth/logout" class="d-inline">
+        <button type="submit" class="btn btn-sm btn-outline-secondary">로그아웃</button>
+    </form>
+}
+
+@code {
+    private string? username;
+    private DateTimeOffset? expiresAt;
+    private string? remaining;
+    private Timer? timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        if (user.Identity?.IsAuthenticated != true) return;
+        username = user.Identity.Name;
+        if (long.TryParse(user.FindFirst("session_exp")?.Value, out var unix))
+            expiresAt = DateTimeOffset.FromUnixTimeSeconds(unix);
+        Tick(null);
+        timer = new Timer(Tick, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void Tick(object? _)
+    {
+        if (expiresAt is not { } e) return;
+        var left = e - DateTimeOffset.UtcNow;
+        if (left <= TimeSpan.Zero)
+        {
+            timer?.Dispose();
+            timer = null;
+            InvokeAsync(() => Nav.NavigateTo("/auth/logout", forceLoad: true));
+            return;
+        }
+        remaining = left.TotalHours >= 1
+            ? $"{(int)left.TotalHours}시간 {left.Minutes}분"
+            : left.TotalMinutes >= 1
+                ? $"{left.Minutes}분 {left.Seconds}초"
+                : $"{left.Seconds}초";
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        timer?.Dispose();
+        timer = null;
+    }
+}
