@@ -78,7 +78,11 @@ else
                             <span class="badge bg-success">게시됨</span>
                         }
                     }
-                    <input class="form-control form-control-sm" style="width:160px" placeholder="버전 (예: v1.01)" @bind="version" />
+                    <input class="form-control form-control-sm" style="width:150px" placeholder="버전 (예: v1.01)" @bind="version" />
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">시행일</span>
+                        <input type="date" class="form-control form-control-sm" style="width:150px" @bind="effectiveDate" title="미입력 시 게시일로 저장" />
+                    </span>
                     <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
                 </div>
 
@@ -116,6 +120,10 @@ else
                                 <li class="d-flex align-items-center gap-2 py-1">
                                     <span class="badge bg-body-tertiary text-body border font-monospace">@(string.IsNullOrEmpty(v.Version) ? "—" : v.Version)</span>
                                     <span class="text-muted">@v.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                                    @if (v.EffectiveDate is { } ed)
+                                    {
+                                        <span class="text-muted">· 시행 @ed.ToString("yyyy-MM-dd")</span>
+                                    }
                                     @if (v.IsCurrent)
                                     {
                                         <span class="badge bg-success">현재 공개</span>
@@ -140,6 +148,7 @@ else
     private string locale = "en";
     private string content = "";
     private string version = "";
+    private DateOnly? effectiveDate;  // 시행일(null 이면 게시일)
     private bool published;
     private string tab = "edit";
     private string? msg;
@@ -157,6 +166,7 @@ else
         locale = "";
         content = "";
         version = "";
+        effectiveDate = null;
         published = false;
         versions = [];
         tab = "edit";
@@ -174,6 +184,7 @@ else
         var doc = await Db.GetLegalDocAsync(type, locale);
         content = doc?.Content ?? "";
         published = doc?.Published ?? false;
+        effectiveDate = null;  // 시행일은 재게시 때 새로 정함(빈 값=게시일)
         versions = await Db.ListLegalVersionsAsync(type, locale);
         version = versions.Count > 0 ? versions[0].Version ?? "" : ""; // 최신 버전 라벨 프리필(bump 용)
     }
@@ -190,7 +201,7 @@ else
         if (loc.Length == 0) { err = true; msg = "로케일을 입력하세요 (예: en)."; return; }
         if (publish && string.IsNullOrWhiteSpace(version)) { err = true; msg = "게시하려면 버전을 입력하세요 (예: v1.01)."; return; }
 
-        await Db.SaveLegalDocAsync(type, loc, content, version, publish, await CurrentActor());
+        await Db.SaveLegalDocAsync(type, loc, content, version, effectiveDate, publish, await CurrentActor());
         locale = loc;
         isNew = false;
         published = published || publish;

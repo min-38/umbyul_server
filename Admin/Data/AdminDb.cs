@@ -424,8 +424,8 @@ public sealed class AdminDb(IConfiguration config)
         return (r.GetString(0), r.GetBoolean(1));
     }
 
-    // 초안 저장. publish=true 면 legal_versions 에 불변 스냅샷도 남긴다(NON-69). version 은 게시 시 라벨(NON-70).
-    public async Task SaveLegalDocAsync(string type, string locale, string content, string? version, bool published, Actor actor, CancellationToken ct = default)
+    // 초안 저장. publish=true 면 legal_versions 에 불변 스냅샷도 남긴다(NON-69). version=라벨(NON-70), effectiveDate=시행일(미입력이면 게시일, NON-72).
+    public async Task SaveLegalDocAsync(string type, string locale, string content, string? version, DateOnly? effectiveDate, bool published, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return;
         await using var conn = await OpenAsync(ct);
@@ -460,13 +460,14 @@ public sealed class AdminDb(IConfiguration config)
             }
             await using var ver = new NpgsqlCommand(
                 """
-                insert into public.legal_versions (type, locale, content, version, is_current, published_by)
-                values (@t, @l, @c, @v, true, @by)
+                insert into public.legal_versions (type, locale, content, version, is_current, effective_date, published_by)
+                values (@t, @l, @c, @v, true, coalesce(@eff, current_date), @by)
                 """, conn, tx);
             ver.Parameters.AddWithValue("t", type);
             ver.Parameters.AddWithValue("l", locale);
             ver.Parameters.AddWithValue("c", content);
             ver.Parameters.AddWithValue("v", (object?)(string.IsNullOrWhiteSpace(version) ? null : version.Trim()) ?? DBNull.Value);
+            ver.Parameters.AddWithValue("eff", (object?)effectiveDate ?? DBNull.Value);
             ver.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
             await ver.ExecuteNonQueryAsync(ct);
         }
@@ -481,13 +482,14 @@ public sealed class AdminDb(IConfiguration config)
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select id, version, published_at, is_current from public.legal_versions where type = @t and locale = @l order by published_at desc limit 50", conn);
+            "select id, version, published_at, is_current, effective_date from public.legal_versions where type = @t and locale = @l order by published_at desc limit 50", conn);
         cmd.Parameters.AddWithValue("t", type);
         cmd.Parameters.AddWithValue("l", locale);
         var list = new List<LegalVersionRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
-            list.Add(new LegalVersionRow(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2), r.GetBoolean(3)));
+            list.Add(new LegalVersionRow(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2), r.GetBoolean(3),
+                r.IsDBNull(4) ? null : r.GetFieldValue<DateOnly>(4)));
         return list;
     }
 
@@ -503,7 +505,7 @@ public sealed class AdminDb(IConfiguration config)
 }
 
 public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
-public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt, bool IsCurrent);
+public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt, bool IsCurrent, DateOnly? EffectiveDate);
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,

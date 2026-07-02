@@ -20,7 +20,7 @@ public static class LegalEndpoints
                 // 요청 로케일의 최신 게시 버전 우선, 없으면 en 최신. 둘 다 없으면 404. (NON-69/70)
                 await using var cmd = new NpgsqlCommand(
                     """
-                    select locale, content, published_at, version from public.legal_versions
+                    select locale, content, published_at, version, effective_date from public.legal_versions
                     where type = @type and is_current and locale in (@loc, 'en')
                     order by (locale = @loc) desc
                     limit 1
@@ -36,6 +36,7 @@ public static class LegalEndpoints
                     content = r.GetString(1),
                     updatedAt = r.GetFieldValue<DateTimeOffset>(2),
                     version = r.IsDBNull(3) ? null : r.GetString(3),
+                    effectiveDate = r.IsDBNull(4) ? (DateOnly?)null : r.GetFieldValue<DateOnly>(4),
                 });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
