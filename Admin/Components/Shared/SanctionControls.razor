@@ -7,12 +7,11 @@
 @* 유저 제재 부여(경고/기간정지/영구정지/해제). 유저 관리·신고 화면에서 공통 사용. *@
 <div class="d-flex flex-wrap align-items-center gap-1">
     <input class="form-control form-control-sm" style="width:150px" placeholder="사유(선택)" @bind="reason" />
-    <select class="form-select form-select-sm" style="width:auto" @bind="hours">
-        <option value="1">1시간</option>
-        <option value="24">1일</option>
-        <option value="72">3일</option>
-        <option value="168">7일</option>
-        <option value="720">30일</option>
+    <input type="number" min="1" class="form-control form-control-sm" style="width:72px" @bind="amount" />
+    <select class="form-select form-select-sm" style="width:auto" @bind="unit">
+        <option value="hour">시간</option>
+        <option value="day">일</option>
+        <option value="month">월</option>
     </select>
     <button class="btn btn-sm btn-outline-warning" @onclick="Suspend">정지</button>
     <button class="btn btn-sm btn-outline-secondary" @onclick="Warn">경고</button>
@@ -30,7 +29,8 @@
     [Parameter] public EventCallback OnDone { get; set; }
 
     private string reason = "";
-    private int hours = 24;
+    private int amount = 1;
+    private string unit = "day";
     private string? msg;
 
     private async Task Warn()
@@ -42,7 +42,13 @@
 
     private async Task Suspend()
     {
-        var until = DateTimeOffset.UtcNow.AddHours(hours);
+        if (amount < 1) { msg = "기간은 1 이상이어야 합니다."; return; }
+        var until = unit switch
+        {
+            "hour" => DateTimeOffset.UtcNow.AddHours(amount),
+            "month" => DateTimeOffset.UtcNow.AddMonths(amount),
+            _ => DateTimeOffset.UtcNow.AddDays(amount),
+        };
         using (Guard.Work())
             await Db.SuspendUserAsync(UserId, until, R(), await CurrentActor(), ReportId);
         await Done($"정지: {until.ToLocalTime():yyyy-MM-dd HH:mm}까지");
