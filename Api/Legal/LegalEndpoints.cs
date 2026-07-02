@@ -21,8 +21,8 @@ public static class LegalEndpoints
                 await using var cmd = new NpgsqlCommand(
                     """
                     select locale, content, published_at, version from public.legal_versions
-                    where type = @type and locale in (@loc, 'en')
-                    order by (locale = @loc) desc, published_at desc
+                    where type = @type and is_current and locale in (@loc, 'en')
+                    order by (locale = @loc) desc
                     limit 1
                     """, conn);
                 cmd.Parameters.AddWithValue("type", type);

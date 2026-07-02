@@ -116,7 +116,7 @@ else
                                 <li class="d-flex align-items-center gap-2 py-1">
                                     <span class="badge bg-body-tertiary text-body border font-monospace">@(string.IsNullOrEmpty(v.Version) ? "—" : v.Version)</span>
                                     <span class="text-muted">@v.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
-                                    @if (i == 0)
+                                    @if (v.IsCurrent)
                                     {
                                         <span class="badge bg-success">현재 공개</span>
                                     }

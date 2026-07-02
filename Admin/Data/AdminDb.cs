@@ -450,10 +450,18 @@ public sealed class AdminDb(IConfiguration config)
 
         if (published)
         {
+            // (종류×로케일)당 current 는 하나만: 이전 current 해제 후 새 것을 current 로(NON-71).
+            await using (var clear = new NpgsqlCommand(
+                "update public.legal_versions set is_current = false where type = @t and locale = @l and is_current", conn, tx))
+            {
+                clear.Parameters.AddWithValue("t", type);
+                clear.Parameters.AddWithValue("l", locale);
+                await clear.ExecuteNonQueryAsync(ct);
+            }
             await using var ver = new NpgsqlCommand(
                 """
-                insert into public.legal_versions (type, locale, content, version, published_by)
-                values (@t, @l, @c, @v, @by)
+                insert into public.legal_versions (type, locale, content, version, is_current, published_by)
+                values (@t, @l, @c, @v, true, @by)
                 """, conn, tx);
             ver.Parameters.AddWithValue("t", type);
             ver.Parameters.AddWithValue("l", locale);
@@ -473,13 +481,13 @@ public sealed class AdminDb(IConfiguration config)
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select id, version, published_at from public.legal_versions where type = @t and locale = @l order by published_at desc limit 50", conn);
+            "select id, version, published_at, is_current from public.legal_versions where type = @t and locale = @l order by published_at desc limit 50", conn);
         cmd.Parameters.AddWithValue("t", type);
         cmd.Parameters.AddWithValue("l", locale);
         var list = new List<LegalVersionRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
-            list.Add(new LegalVersionRow(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+            list.Add(new LegalVersionRow(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2), r.GetBoolean(3)));
         return list;
     }
 
@@ -495,7 +503,7 @@ public sealed class AdminDb(IConfiguration config)
 }
 
 public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
-public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt);
+public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt, bool IsCurrent);
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,
