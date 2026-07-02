@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Api.Account;
 using Api.Auth;
+using Api.Chart;
 using Api.Common;
 using Api.Detail;
 using Api.Discover;
@@ -200,6 +201,9 @@ app.MapHomeEndpoints(dbConnString);
 
 // Discover (/discover) — 공개, DB만 조회: 신규·급상승 (NON-81)
 app.MapDiscoverEndpoints(dbConnString);
+
+// Chart (/chart) — 공개, DB 집계 랭킹(최다/최고·베이지안/호불호) (NON-82)
+app.MapChartEndpoints(dbConnString);
 
 // 약관/개인정보 (/legal/{type}) — 공개 조회 (NON-64)
 app.MapLegalEndpoints(dbConnString);
