@@ -50,7 +50,8 @@ public static class NotificationEndpoints
                         string? link = type switch
                         {
                             "follow" => $"/u/{actor}",
-                            "review_like" or "warning" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}",
+                            // 리뷰로 딥링크: /{track|album}/{spotifyId}#review-{ratingId} (NON-60, 기존 앵커 관례)
+                            "review_like" or "warning" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}#review-{rd.GetString(2)}",
                             _ => null,
                         };
                         items.Add(new NotificationItem(
