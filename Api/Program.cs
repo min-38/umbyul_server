@@ -4,6 +4,7 @@ using Api.Auth;
 using Api.Common;
 using Api.Detail;
 using Api.Home;
+using Api.Legal;
 using Api.Profile;
 using Api.Ratings;
 using Api.Search;
@@ -193,6 +194,9 @@ app.MapAccountEndpoints(dbConnString);
 
 // 홈 피드 (/home) — 공개(옵셔널 인증), DB만 조회 (NON-43)
 app.MapHomeEndpoints(dbConnString);
+
+// 약관/개인정보 (/legal/{type}) — 공개 조회 (NON-64)
+app.MapLegalEndpoints(dbConnString);
 
 app.Run();
 

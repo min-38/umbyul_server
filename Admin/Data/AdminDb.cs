@@ -395,7 +395,60 @@ public sealed class AdminDb(IConfiguration config)
         await LogAsync(conn, actor, $"user.{type}", userId.ToString(),
             reportId is { } rp ? $"report {rp}; {detail}" : detail, ct);
     }
+
+    // ── 약관/개인정보 (NON-64) ──
+    public async Task<List<LegalDocRow>> ListLegalDocsAsync(CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select type, locale, published, updated_at from public.legal_documents order by type, locale", conn);
+        var list = new List<LegalDocRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new LegalDocRow(r.GetString(0), r.GetString(1), r.GetBoolean(2), r.GetFieldValue<DateTimeOffset>(3)));
+        return list;
+    }
+
+    // 편집용: 미게시본 포함 원문·게시여부. 없으면 null.
+    public async Task<(string Content, bool Published)?> GetLegalDocAsync(string type, string locale, CancellationToken ct = default)
+    {
+        if (!Configured) return null;
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select content, published from public.legal_documents where type = @t and locale = @l", conn);
+        cmd.Parameters.AddWithValue("t", type);
+        cmd.Parameters.AddWithValue("l", locale);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        return (r.GetString(0), r.GetBoolean(1));
+    }
+
+    public async Task SaveLegalDocAsync(string type, string locale, string content, bool published, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using (var cmd = new NpgsqlCommand(
+            """
+            insert into public.legal_documents (type, locale, content, published, updated_at, updated_by)
+            values (@t, @l, @c, @p, now(), @by)
+            on conflict (type, locale) do update
+                set content = excluded.content, published = excluded.published,
+                    updated_at = now(), updated_by = excluded.updated_by
+            """, conn))
+        {
+            cmd.Parameters.AddWithValue("t", type);
+            cmd.Parameters.AddWithValue("l", locale);
+            cmd.Parameters.AddWithValue("c", content);
+            cmd.Parameters.AddWithValue("p", published);
+            cmd.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, published ? "legal.publish" : "legal.save", $"{type}/{locale}", null, ct);
+    }
 }
+
+public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,
