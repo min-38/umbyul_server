@@ -1,0 +1,116 @@
+@page "/reports"
+@rendermode InteractiveServer
+@using Admin.Data
+@inject AdminDb Db
+
+<PageTitle>신고 처리</PageTitle>
+<h1>신고 처리</h1>
+
+<div class="mb-3">
+    상태:
+    @foreach (var (key, label) in Filters)
+    {
+        <button class="btn btn-sm @(filter == key ? "btn-primary" : "btn-outline-secondary") me-1"
+                @onclick="() => Load(key)">@label</button>
+    }
+    <button class="btn btn-sm btn-outline-secondary" @onclick="() => Load(filter)">새로고침</button>
+</div>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다. user-secrets에 DATABASE:* 를 설정하세요.</div>
+}
+else if (reports is null)
+{
+    <p>불러오는 중…</p>
+}
+else if (reports.Count == 0)
+{
+    <p class="text-muted">해당 상태의 신고가 없습니다.</p>
+}
+else
+{
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr>
+                <th>대상</th><th>사유</th><th>상세</th><th>신고자</th><th>상태</th><th>시각</th><th>조치</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in reports)
+            {
+                <tr>
+                    <td>
+                        <span class="badge bg-secondary">@(r.TargetType == "rating" ? "리뷰" : "유저")</span>
+                        <strong>@r.Title</strong>
+                        @if (r.Sub is not null) { <div class="small text-muted">@r.Sub</div> }
+                        @if (r.Body is not null) { <div class="small">“@r.Body”</div> }
+                    </td>
+                    <td>@Reason(r.Reason)</td>
+                    <td class="small">@r.Detail</td>
+                    <td class="small">@r.Reporter</td>
+                    <td><span class="badge @StatusClass(r.Status)">@r.Status</span></td>
+                    <td class="small">@r.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                    <td style="white-space:nowrap">
+                        @if (r.Status != "reviewed")
+                        {
+                            <button class="btn btn-sm btn-outline-secondary me-1" @onclick='() => SetStatus(r.Id, "reviewed")'>검토</button>
+                        }
+                        @if (r.Status != "resolved")
+                        {
+                            <button class="btn btn-sm btn-outline-success me-1" @onclick='() => SetStatus(r.Id, "resolved")'>해결</button>
+                        }
+                        @if (r.TargetType == "rating")
+                        {
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteReview(r)">리뷰 삭제</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private static readonly (string, string)[] Filters =
+        [("pending", "대기"), ("reviewed", "검토됨"), ("resolved", "해결됨"), ("", "전체")];
+
+    private List<ReportRow>? reports;
+    private string filter = "pending";
+
+    protected override async Task OnInitializedAsync() => await Load(filter);
+
+    private async Task Load(string status)
+    {
+        filter = status;
+        reports = null;
+        reports = await Db.GetReportsAsync(status);
+    }
+
+    private async Task SetStatus(Guid id, string status)
+    {
+        await Db.SetReportStatusAsync(id, status);
+        await Load(filter);
+    }
+
+    private async Task DeleteReview(ReportRow r)
+    {
+        await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId);
+        await Load(filter);
+    }
+
+    private static string Reason(string r) => r switch
+    {
+        "not_music" => "음악 무관",
+        "inappropriate_profile" => "부적절 프로필",
+        "abuse" => "악플·욕설",
+        _ => "기타",
+    };
+
+    private static string StatusClass(string s) => s switch
+    {
+        "pending" => "bg-warning text-dark",
+        "reviewed" => "bg-info text-dark",
+        _ => "bg-success",
+    };
+}

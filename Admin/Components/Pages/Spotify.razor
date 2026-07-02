@@ -1,0 +1,82 @@
+@page "/spotify"
+@rendermode InteractiveServer
+@using Admin.Data
+@inject AdminDb Db
+
+<PageTitle>Spotify 상태</PageTitle>
+<h1>Spotify 레이트리밋 상태</h1>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else if (!loaded)
+{
+    <p>불러오는 중…</p>
+}
+else
+{
+    <button class="btn btn-sm btn-outline-secondary mb-3" @onclick="Load">새로고침</button>
+
+    @if (Blocked)
+    {
+        <div class="alert alert-danger">
+            <strong>레이트리밋 걸림 (429)</strong><br />
+            해제 예정: @status!.BlockedUntil!.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            (약 @Remaining 남음)<br />
+            마지막 Retry-After: @status.RetryAfterSeconds 초
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-success">
+            현재 차단 없음.
+            @if (status?.UpdatedAt is { } u)
+            {
+                @: (마지막 429 기록: @u.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))
+            }
+            else
+            {
+                @: (429 기록 없음)
+            }
+        </div>
+    }
+
+    <h5 class="mt-4">캐시</h5>
+    <p class="small text-muted">
+        Spotify 응답 캐시 항목: <strong>@cacheCount</strong>개
+        @if (cacheLatest is { } l)
+        {
+            @: · 최근 저장: @l.ToLocalTime().ToString("MM-dd HH:mm")
+        }
+    </p>
+}
+
+@code {
+    private SpotifyStatusRow? status;
+    private long cacheCount;
+    private DateTimeOffset? cacheLatest;
+    private bool loaded;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        loaded = false;
+        status = await Db.GetSpotifyStatusAsync();
+        (cacheCount, cacheLatest) = await Db.GetCacheStatsAsync();
+        loaded = true;
+    }
+
+    private bool Blocked => status?.BlockedUntil is { } b && b > DateTimeOffset.UtcNow;
+
+    private string Remaining
+    {
+        get
+        {
+            if (status?.BlockedUntil is not { } b) return "";
+            var t = b - DateTimeOffset.UtcNow;
+            return t.TotalHours >= 1 ? $"{t.TotalHours:F1}시간" : $"{t.TotalMinutes:F0}분";
+        }
+    }
+}

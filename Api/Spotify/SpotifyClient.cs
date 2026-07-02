@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Npgsql;
 
 namespace Api.Spotify;
 
@@ -22,6 +23,9 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
     // 캡 이후엔 소수의 프로브만 나가 penalty를 자연 만료시킨다.
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
     private DateTimeOffset _blockedUntil = DateTimeOffset.MinValue;
+
+    // 429 발생 시 관리자 모니터링용으로 실제 Retry-After를 DB(spotify_status)에 기록.
+    private readonly string? _dbConnString = BuildDbConnString(config);
 
     public bool Configured => !string.IsNullOrEmpty(_clientId) && !string.IsNullOrEmpty(_clientSecret);
 
@@ -69,10 +73,12 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
 
         if ((int)res.StatusCode == 429)
         {
-            var retry = res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
-            if (retry > MaxBackoff) retry = MaxBackoff; // 앱 전체를 수 시간 막지 않게 캡
-            _blockedUntil = DateTimeOffset.UtcNow.Add(retry);
-            throw new HttpRequestException($"Spotify 429 — backing off {retry.TotalSeconds:F0}s (Retry-After {res.Headers.RetryAfter?.Delta?.TotalSeconds:F0})");
+            var realRetry = res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
+            var circuitRetry = realRetry > MaxBackoff ? MaxBackoff : realRetry; // 회로는 짧게(캡)
+            _blockedUntil = DateTimeOffset.UtcNow.Add(circuitRetry);
+            await WriteRateLimitStatusAsync(DateTimeOffset.UtcNow.Add(realRetry), (int)realRetry.TotalSeconds, ct);
+            throw new HttpRequestException(
+                $"Spotify 429 — backing off {circuitRetry.TotalSeconds:F0}s (Retry-After {realRetry.TotalSeconds:F0})");
         }
 
         if (res.StatusCode == HttpStatusCode.OK)
@@ -108,5 +114,42 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         {
             _lock.Release();
         }
+    }
+
+    private static string? BuildDbConnString(IConfiguration config)
+    {
+        var db = config.GetSection("DATABASE");
+        if (string.IsNullOrEmpty(db["HOST"]) || string.IsNullOrEmpty(db["PASSWORD"])) return null;
+        return new NpgsqlConnectionStringBuilder
+        {
+            Host = db["HOST"],
+            Port = int.TryParse(db["PORT"], out var p) ? p : 5432,
+            Database = string.IsNullOrEmpty(db["DATABASE"]) ? "postgres" : db["DATABASE"],
+            Username = string.IsNullOrEmpty(db["USER"]) ? "postgres" : db["USER"],
+            Password = db["PASSWORD"],
+            SslMode = SslMode.Require,
+        }.ConnectionString;
+    }
+
+    // 관리자 모니터링용 429 상태 기록(best-effort). 실패해도 무시.
+    private async Task WriteRateLimitStatusAsync(DateTimeOffset blockedUntil, int retryAfterSeconds, CancellationToken ct)
+    {
+        if (_dbConnString is null) return;
+        try
+        {
+            await using var conn = new NpgsqlConnection(_dbConnString);
+            await conn.OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                """
+                insert into public.spotify_status (id, blocked_until, retry_after_seconds, updated_at)
+                values (1, @b, @r, now())
+                on conflict (id) do update set blocked_until = excluded.blocked_until,
+                    retry_after_seconds = excluded.retry_after_seconds, updated_at = now()
+                """, conn);
+            cmd.Parameters.AddWithValue("b", blockedUntil);
+            cmd.Parameters.AddWithValue("r", retryAfterSeconds);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (NpgsqlException) { /* best-effort */ }
     }
 }
