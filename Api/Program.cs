@@ -3,6 +3,7 @@ using Api.Account;
 using Api.Auth;
 using Api.Common;
 using Api.Detail;
+using Api.Faq;
 using Api.Home;
 using Api.Legal;
 using Api.Profile;
@@ -197,6 +198,9 @@ app.MapHomeEndpoints(dbConnString);
 
 // 약관/개인정보 (/legal/{type}) — 공개 조회 (NON-64)
 app.MapLegalEndpoints(dbConnString);
+
+// FAQ (/faq) — 공개 조회 (NON-73)
+app.MapFaqEndpoints(dbConnString);
 
 app.Run();
 

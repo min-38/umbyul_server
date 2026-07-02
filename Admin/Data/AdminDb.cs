@@ -502,8 +502,80 @@ public sealed class AdminDb(IConfiguration config)
         cmd.Parameters.AddWithValue("id", versionId);
         return await cmd.ExecuteScalarAsync(ct) as string;
     }
+
+    // ── FAQ (NON-73) ──
+    public async Task<List<FaqRow>> ListFaqAsync(string locale, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select id, category, question, answer, sort_order, published, updated_at from public.faq_items where locale = @l order by sort_order, category", conn);
+        cmd.Parameters.AddWithValue("l", locale);
+        var list = new List<FaqRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new FaqRow(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt32(4), r.GetBoolean(5), r.GetFieldValue<DateTimeOffset>(6)));
+        return list;
+    }
+
+    // id 있으면 수정, 없으면 생성. 저장된 id 반환.
+    public async Task<Guid> SaveFaqAsync(Guid? id, string locale, string category, string question, string answer, int sortOrder, bool published, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return Guid.Empty;
+        await using var conn = await OpenAsync(ct);
+        Guid savedId;
+        if (id is { } existing)
+        {
+            await using var upd = new NpgsqlCommand(
+                """
+                update public.faq_items set locale = @l, category = @cat, question = @q, answer = @a,
+                    sort_order = @o, published = @p, updated_at = now(), updated_by = @by
+                where id = @id
+                """, conn);
+            upd.Parameters.AddWithValue("id", existing);
+            AddFaqParams(upd, locale, category, question, answer, sortOrder, published, actor);
+            await upd.ExecuteNonQueryAsync(ct);
+            savedId = existing;
+        }
+        else
+        {
+            await using var ins = new NpgsqlCommand(
+                """
+                insert into public.faq_items (locale, category, question, answer, sort_order, published, updated_by)
+                values (@l, @cat, @q, @a, @o, @p, @by) returning id
+                """, conn);
+            AddFaqParams(ins, locale, category, question, answer, sortOrder, published, actor);
+            savedId = (Guid)(await ins.ExecuteScalarAsync(ct))!;
+        }
+        await LogAsync(conn, actor, "faq.save", savedId.ToString(), $"{locale}/{category}", ct);
+        return savedId;
+    }
+
+    private static void AddFaqParams(NpgsqlCommand c, string locale, string category, string question, string answer, int sortOrder, bool published, Actor actor)
+    {
+        c.Parameters.AddWithValue("l", locale);
+        c.Parameters.AddWithValue("cat", category ?? "");
+        c.Parameters.AddWithValue("q", question);
+        c.Parameters.AddWithValue("a", answer ?? "");
+        c.Parameters.AddWithValue("o", sortOrder);
+        c.Parameters.AddWithValue("p", published);
+        c.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+    }
+
+    public async Task DeleteFaqAsync(Guid id, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using (var cmd = new NpgsqlCommand("delete from public.faq_items where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("id", id);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, "faq.delete", id.ToString(), null, ct);
+    }
 }
 
+public sealed record FaqRow(Guid Id, string Category, string Question, string Answer, int SortOrder, bool Published, DateTimeOffset UpdatedAt);
 public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
 public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt, bool IsCurrent, DateOnly? EffectiveDate);
 
