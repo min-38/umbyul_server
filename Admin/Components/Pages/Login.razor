@@ -6,24 +6,27 @@
 
 <PageTitle>로그인 · Glitter Admin</PageTitle>
 
-<div style="max-width:320px;margin:10vh auto;font-family:sans-serif">
-    <h1 style="font-size:1.4rem">Glitter Admin</h1>
-    @if (error)
-    {
-        <p style="color:#c00">아이디 또는 비밀번호가 올바르지 않습니다.</p>
-    }
-    <form method="post" action="/auth/login">
-        <AntiforgeryToken />
-        <div style="margin-bottom:.5rem">
-            <input name="username" placeholder="아이디" autofocus required
-                   style="width:100%;padding:.5rem;box-sizing:border-box" />
+<div class="d-flex align-items-center justify-content-center" style="min-height:100vh;background:linear-gradient(180deg,#1e1b4b 0%,#3b0764 55%,#4a044e 100%)">
+    <div class="card shadow-sm" style="width:340px">
+        <div class="card-body p-4">
+            <h1 class="h4 text-center mb-1"><span class="glitter-brand">Glitter</span> Admin</h1>
+            <p class="text-muted small text-center mb-4">관리자 로그인</p>
+            @if (error)
+            {
+                <div class="alert alert-danger py-2 small">아이디 또는 비밀번호가 올바르지 않습니다.</div>
+            }
+            <form method="post" action="/auth/login">
+                <AntiforgeryToken />
+                <div class="mb-2">
+                    <input name="username" class="form-control" placeholder="아이디" autofocus required />
+                </div>
+                <div class="mb-3">
+                    <input name="password" type="password" class="form-control" placeholder="비밀번호" required />
+                </div>
+                <button type="submit" class="btn btn-primary w-100">로그인</button>
+            </form>
         </div>
-        <div style="margin-bottom:.75rem">
-            <input name="password" type="password" placeholder="비밀번호" required
-                   style="width:100%;padding:.5rem;box-sizing:border-box" />
-        </div>
-        <button type="submit" style="width:100%;padding:.5rem;cursor:pointer">로그인</button>
-    </form>
+    </div>
 </div>
 
 @code {

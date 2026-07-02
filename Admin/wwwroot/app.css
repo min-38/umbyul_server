@@ -1,15 +1,62 @@
 html, body {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    background-color: #f7f7fb;
 }
 
 a, .btn-link {
-    color: #006bb7;
+    color: #6d28d9;
 }
 
 .btn-primary {
     color: #fff;
-    background-color: #1b6ec2;
-    border-color: #1861ac;
+    background-color: #6d28d9;
+    border-color: #5b21b6;
+}
+
+.btn-primary:hover, .btn-primary:active, .btn-primary:focus {
+    background-color: #5b21b6;
+    border-color: #4c1d95;
+}
+
+/* ── Glitter Admin 테마 ── */
+.glitter-brand {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background-image:
+        radial-gradient(circle at 22% 28%, #e9d5ff, transparent 45%),
+        radial-gradient(circle at 80% 66%, #fbcfe8, transparent 45%),
+        radial-gradient(circle at 52% 52%, #bae6fd, transparent 55%),
+        linear-gradient(120deg, #c4b5fd, #a5b4fc, #93c5fd);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+}
+
+.page-header {
+    margin-bottom: 1.25rem;
+}
+
+    .page-header h1 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 0.1rem;
+    }
+
+    .page-header .subtitle {
+        color: var(--bs-secondary-color);
+        font-size: 0.9rem;
+        margin: 0;
+    }
+
+.card {
+    border: 1px solid #ececf2;
+    border-radius: 0.6rem;
+    box-shadow: 0 1px 3px rgba(16, 16, 40, 0.05);
+}
+
+.table > :not(caption) > * > * {
+    padding: 0.6rem 0.75rem;
 }
 
 .btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {

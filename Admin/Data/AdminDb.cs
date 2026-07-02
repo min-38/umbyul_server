@@ -67,7 +67,7 @@ public sealed class AdminDb(IConfiguration config)
                 }
                 else
                 {
-                    title = r.IsDBNull(9) ? "(제목 미상)" : r.GetString(9); // target_name(캐시). 옛 평점은 null 가능
+                    title = r.IsDBNull(9) ? "(대상 음악 미상)" : r.GetString(9); // target_name(캐시). 옛 평점은 null 가능
                     var artist = r.IsDBNull(10) ? null : r.GetString(10);
                     var author = r.IsDBNull(12) ? null : r.GetString(12);
                     sub = string.Join(" · ", new[] { artist, author is null ? null : $"by {author}" }.Where(x => x is not null));
