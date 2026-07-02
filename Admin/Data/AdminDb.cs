@@ -367,6 +367,28 @@ public sealed class AdminDb(IConfiguration config)
             await upd.ExecuteNonQueryAsync(ct);
         }
 
+        // 경고는 유저에게 알림으로 전달(NON-58). 신고에서 부여했으면 대상 rating id를 target 으로 연결.
+        if (type == "warning")
+        {
+            string? targetRatingId = null;
+            if (reportId is { } rid2)
+            {
+                await using var q = new NpgsqlCommand(
+                    "select target_id from public.reports where id = @rid and target_type = 'rating'", conn, tx);
+                q.Parameters.AddWithValue("rid", rid2);
+                targetRatingId = await q.ExecuteScalarAsync(ct) as string;
+            }
+            await using var notif = new NpgsqlCommand(
+                """
+                insert into public.notifications (recipient_id, actor_id, type, target_id, detail)
+                values (@uid, null, 'warning', @target, @detail)
+                """, conn, tx);
+            notif.Parameters.AddWithValue("uid", userId);
+            notif.Parameters.AddWithValue("target", (object?)targetRatingId ?? DBNull.Value);
+            notif.Parameters.AddWithValue("detail", (object?)reason ?? DBNull.Value);
+            await notif.ExecuteNonQueryAsync(ct);
+        }
+
         await tx.CommitAsync(ct);
 
         var detail = until is { } u ? $"until {u:u}" : reason;

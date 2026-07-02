@@ -71,76 +71,11 @@ public static class ProfileEndpoints
             });
         });
 
-        // 내 제재 상태(정지/영구정지) + 미확인 경고 — 상단 배너 노출용(NON-55/57). 마이그레이션 전이면 fail-open.
+        // 내 제재 상태(정지/영구정지) — 상단 배너 노출용(NON-55). 마이그레이션(0018) 전이면 제재 없음으로 fail-open.
+        // 경고(warning)는 알림으로 전달(NON-58) — 여기서 다루지 않음.
         me.MapGet("/sanction", async (ClaimsPrincipal user) =>
         {
-            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
-            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
-
-            var banned = false;
-            DateTimeOffset? until = null;
-            string? reason = null;
-            var warnings = new List<object>();
-            try
-            {
-                await using var conn = new NpgsqlConnection(dbConnString);
-                await conn.OpenAsync();
-                await using (var cmd = new NpgsqlCommand(
-                    """
-                    select u.banned, u.suspended_until,
-                           (select s.reason from public.user_sanctions s
-                            where s.user_id = u.id and s.type in ('suspension', 'ban')
-                            order by s.created_at desc limit 1) as reason
-                    from public.users u where u.id = @id
-                    """, conn))
-                {
-                    cmd.Parameters.AddWithValue("id", Guid.Parse(id));
-                    await using var r = await cmd.ExecuteReaderAsync();
-                    if (await r.ReadAsync())
-                    {
-                        banned = !r.IsDBNull(0) && r.GetBoolean(0);
-                        until = r.IsDBNull(1) ? null : r.GetFieldValue<DateTimeOffset>(1);
-                        reason = r.IsDBNull(2) ? null : r.GetString(2);
-                    }
-                }
-
-                // 미확인 경고(acknowledged_at is null). 컬럼 미존재(0019 전)면 경고 없음으로.
-                try
-                {
-                    await using var wc = new NpgsqlCommand(
-                        """
-                        select id, reason, created_at from public.user_sanctions
-                        where user_id = @id and type = 'warning' and acknowledged_at is null
-                        order by created_at desc
-                        """, conn);
-                    wc.Parameters.AddWithValue("id", Guid.Parse(id));
-                    await using var wr = await wc.ExecuteReaderAsync();
-                    while (await wr.ReadAsync())
-                        warnings.Add(new
-                        {
-                            id = wr.GetInt64(0).ToString(),
-                            reason = wr.IsDBNull(1) ? null : wr.GetString(1),
-                            createdAt = wr.GetFieldValue<DateTimeOffset>(2),
-                        });
-                }
-                catch (NpgsqlException) { /* 0019 전 — 경고 없음 */ }
-            }
-            catch (NpgsqlException) { /* 0018 전 등 — 제재 없음 */ }
-
-            // 만료된 정지는 제재 아님.
-            var suspended = !banned && until is { } u && u > DateTimeOffset.UtcNow;
-            return ApiResults.Ok("OK", new
-            {
-                banned,
-                suspendedUntil = suspended ? until : null,
-                reason = banned || suspended ? reason : null,
-                warnings,
-            });
-        });
-
-        // 미확인 경고 전체 확인 처리(NON-57).
-        me.MapPost("/warnings/ack", async (ClaimsPrincipal user) =>
-        {
+            object None() => new { banned = false, suspendedUntil = (DateTimeOffset?)null, reason = (string?)null };
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
             try
@@ -148,12 +83,24 @@ public static class ProfileEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
-                    "update public.user_sanctions set acknowledged_at = now() where user_id = @id and type = 'warning' and acknowledged_at is null", conn);
+                    """
+                    select u.banned, u.suspended_until,
+                           (select s.reason from public.user_sanctions s
+                            where s.user_id = u.id and s.type in ('suspension', 'ban')
+                            order by s.created_at desc limit 1) as reason
+                    from public.users u where u.id = @id
+                    """, conn);
                 cmd.Parameters.AddWithValue("id", Guid.Parse(id));
-                await cmd.ExecuteNonQueryAsync();
-                return ApiResults.Ok("OK");
+                await using var r = await cmd.ExecuteReaderAsync();
+                if (!await r.ReadAsync()) return ApiResults.Ok("OK", None());
+                var banned = !r.IsDBNull(0) && r.GetBoolean(0);
+                var until = r.IsDBNull(1) ? (DateTimeOffset?)null : r.GetFieldValue<DateTimeOffset>(1);
+                var reason = r.IsDBNull(2) ? null : r.GetString(2);
+                // 만료된 정지는 제재 아님.
+                if (!banned && (until is null || until <= DateTimeOffset.UtcNow)) return ApiResults.Ok("OK", None());
+                return ApiResults.Ok("OK", new { banned, suspendedUntil = banned ? (DateTimeOffset?)null : until, reason });
             }
-            catch (NpgsqlException) { return ApiResults.Ok("OK"); } // 컬럼 미존재 등 — 무시
+            catch (NpgsqlException) { return ApiResults.Ok("OK", None()); } // 컬럼 미존재 등 — 통과
         });
 
         // 프로비저닝 — body 또는 user_metadata(이메일 가입)에서 username/country/동의 취득. username UNIQUE 보장.

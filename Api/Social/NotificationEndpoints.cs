@@ -9,7 +9,7 @@ public static class NotificationEndpoints
 {
     public sealed record NotificationItem(
         string Id, string Type, string ActorUsername, string? ActorAvatarUrl,
-        DateTimeOffset CreatedAt, bool Read, string? Link);
+        DateTimeOffset CreatedAt, bool Read, string? Link, string? Detail);
 
     public sealed record NotificationList(IReadOnlyList<NotificationItem> Items, int UnreadCount);
 
@@ -32,10 +32,10 @@ public static class NotificationEndpoints
                 await using (var cmd = new NpgsqlCommand(
                     """
                     select n.id, n.type, n.target_id, n.read_at, n.created_at,
-                           u.username, u.avatar_url, r.target_type, r.target_spotify_id
+                           u.username, u.avatar_url, r.target_type, r.target_spotify_id, n.detail
                     from public.notifications n
-                    join public.users u on u.id = n.actor_id
-                    left join public.ratings r on n.type = 'review_like' and r.id::text = n.target_id and r.deleted_at is null
+                    left join public.users u on u.id = n.actor_id
+                    left join public.ratings r on n.type in ('review_like', 'warning') and r.id::text = n.target_id and r.deleted_at is null
                     where n.recipient_id = @me
                     order by n.created_at desc
                     limit 30
@@ -46,18 +46,19 @@ public static class NotificationEndpoints
                     while (await rd.ReadAsync())
                     {
                         var type = rd.GetString(1);
-                        var actor = rd.GetString(5);
+                        var actor = rd.IsDBNull(5) ? "" : rd.GetString(5); // warning 은 발신 유저 없음
                         string? link = type switch
                         {
                             "follow" => $"/u/{actor}",
-                            "review_like" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}",
+                            "review_like" or "warning" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}",
                             _ => null,
                         };
                         items.Add(new NotificationItem(
                             rd.GetGuid(0).ToString(), type, actor,
                             rd.IsDBNull(6) ? null : rd.GetString(6),
                             rd.GetFieldValue<DateTimeOffset>(4),
-                            !rd.IsDBNull(3), link));
+                            !rd.IsDBNull(3), link,
+                            rd.IsDBNull(9) ? null : rd.GetString(9)));
                     }
                 }
 
