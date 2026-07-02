@@ -1,0 +1,142 @@
+@page "/legal"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>약관 · 개인정보</PageTitle>
+
+<div class="page-header">
+    <h1>약관 · 개인정보</h1>
+    <p class="subtitle">이용약관/개인정보처리방침을 로케일별로 작성·게시합니다. 정본은 en.</p>
+</div>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="card-title text-muted mb-3">문서 목록</h6>
+                    @if (docs.Count == 0)
+                    {
+                        <p class="small text-muted mb-0">아직 없습니다.</p>
+                    }
+                    else
+                    {
+                        <ul class="list-unstyled small mb-0">
+                            @foreach (var d in docs)
+                            {
+                                <li class="mb-1">
+                                    <a href="#" @onclick:preventDefault @onclick="() => Load(d.Type, d.Locale)">@TypeLabel(d.Type) · @d.Locale</a>
+                                    @if (d.Published)
+                                    {
+                                        <span class="badge bg-success ms-1">게시</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-secondary ms-1">초안</span>
+                                    }
+                                    <span class="text-muted"> @d.UpdatedAt.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                        <select class="form-select form-select-sm" style="width:auto" @bind="type">
+                            <option value="terms">이용약관</option>
+                            <option value="privacy">개인정보처리방침</option>
+                        </select>
+                        <input class="form-control form-control-sm" style="width:110px" placeholder="로케일(en)" @bind="locale" />
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => Load(type, locale)">불러오기</button>
+                        @if (msg is not null)
+                        {
+                            <span class="small text-success align-self-center">@msg</span>
+                        }
+                    </div>
+
+                    <ul class="nav nav-tabs mb-2">
+                        <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>편집</button></li>
+                        <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
+                    </ul>
+
+                    @if (tab == "edit")
+                    {
+                        <textarea class="form-control font-monospace" rows="18" @bind="content" @bind:event="oninput" placeholder="마크다운으로 작성"></textarea>
+                    }
+                    else
+                    {
+                        <div class="border rounded p-3" style="min-height:20rem">@((MarkupString)PreviewHtml)</div>
+                    }
+
+                    <div class="d-flex gap-2 mt-3">
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => Save(false)">초안 저장</button>
+                        <button class="btn btn-sm btn-primary" @onclick="() => Save(true)">게시</button>
+                        @if (published)
+                        {
+                            <span class="badge bg-success align-self-center">현재 게시됨</span>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<LegalDocRow> docs = [];
+    private string type = "terms";
+    private string locale = "en";
+    private string content = "";
+    private bool published;
+    private string tab = "edit";
+    private string? msg;
+
+    protected override async Task OnInitializedAsync() => await LoadList();
+
+    private async Task LoadList() => docs = await Db.ListLegalDocsAsync();
+
+    private async Task Load(string t, string l)
+    {
+        type = t;
+        locale = string.IsNullOrWhiteSpace(l) ? "en" : l.Trim();
+        msg = null;
+        var doc = await Db.GetLegalDocAsync(type, locale);
+        content = doc?.Content ?? "";
+        published = doc?.Published ?? false;
+        tab = "edit";
+    }
+
+    private async Task Save(bool publish)
+    {
+        var loc = string.IsNullOrWhiteSpace(locale) ? "en" : locale.Trim();
+        await Db.SaveLegalDocAsync(type, loc, content, publish, await CurrentActor());
+        published = publish;
+        msg = publish ? "게시됨" : "초안 저장됨";
+        await LoadList();
+    }
+
+    private string PreviewHtml => Markdig.Markdown.ToHtml(content ?? "");
+
+    private static string TypeLabel(string t) => t == "terms" ? "이용약관" : "개인정보";
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? id = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(id, user.Identity?.Name ?? "?");
+    }
+}
