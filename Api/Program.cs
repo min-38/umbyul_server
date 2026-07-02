@@ -85,6 +85,9 @@ builder.Services.AddCors(o => o.AddPolicy("web", p =>
 // Spotify 카탈로그 클라이언트 (토큰 캐시 공유 위해 싱글톤)
 builder.Services.AddHttpClient();
 builder.Services.AddMemoryCache();
+// Spotify 응답 캐시 (Postgres) — 재시작·다중 인스턴스에도 유지, 429 완화 (NON-44)
+builder.Services.AddSingleton<ISpotifyResponseCache>(
+    dbConnString is null ? new NullSpotifyResponseCache() : new PostgresSpotifyResponseCache(dbConnString));
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 

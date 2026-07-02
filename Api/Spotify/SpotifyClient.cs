@@ -8,7 +8,7 @@ namespace Api.Spotify;
 /// Spotify Web API 클라이언트. Client Credentials flow(앱 토큰)로 카탈로그 검색.
 /// 토큰은 ~1시간 유효 → 캐시하고 만료 시 갱신. 싱글톤 등록이라 토큰 캐시가 공유된다.
 /// 제약(기획안 §5): 음원 스트리밍·AI 학습·Audio Features/Analysis·이미지 파일 저장 금지.
-public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration config)
+public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration config, ISpotifyResponseCache cache)
 {
     private readonly string? _clientId = config.GetSection("SPOTIFY")["CLIENT_ID"];
     private readonly string? _clientSecret = config.GetSection("SPOTIFY")["CLIENT_SECRET"];
@@ -49,9 +49,14 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         return body;
     }
 
-    // 공통 GET. 서킷 오픈 중이면 호출 없이 즉시 실패, 429면 Retry-After(캡)만큼 서킷을 연다.
+    // 공통 GET. 캐시 히트면 Spotify 미호출(서킷/429 무관하게 서빙), 미스면 조회 후 200만 캐시.
+    // 서킷 오픈 중(429 penalty)이면 호출 없이 즉시 실패, 429면 Retry-After(캡)만큼 서킷을 연다.
     private async Task<(HttpStatusCode Status, string Body)> RequestAsync(string url, CancellationToken ct)
     {
+        var ttl = url.Contains("/search", StringComparison.Ordinal) ? TimeSpan.FromHours(1) : TimeSpan.FromHours(12);
+        var cached = await cache.GetAsync(url, ttl, ct);
+        if (cached is not null) return (HttpStatusCode.OK, cached);
+
         if (DateTimeOffset.UtcNow < _blockedUntil)
             throw new HttpRequestException($"Spotify rate-limited (circuit open until {_blockedUntil:O})");
 
@@ -69,6 +74,10 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
             _blockedUntil = DateTimeOffset.UtcNow.Add(retry);
             throw new HttpRequestException($"Spotify 429 — backing off {retry.TotalSeconds:F0}s (Retry-After {res.Headers.RetryAfter?.Delta?.TotalSeconds:F0})");
         }
+
+        if (res.StatusCode == HttpStatusCode.OK)
+            await cache.SetAsync(url, body, ct); // 200만 캐시(404/에러는 캐시 안 함)
+
         return (res.StatusCode, body);
     }
 
