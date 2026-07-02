@@ -47,6 +47,14 @@ else
         </div>
     }
 
+    @if (!Blocked && status?.UpdatedAt is null && cacheCount == 0)
+    {
+        <div class="alert alert-secondary small">
+            아직 기록된 데이터가 없습니다. 메인 Api가 Spotify를 호출(또는 429 발생)하면 여기에 차단 상태·캐시가 채워집니다.
+            서킷브레이커·캐시 기록 기능(NON-41/44)이 포함된 Api 빌드가 배포·구동 중이어야 표시됩니다.
+        </div>
+    }
+
     <div class="card mt-4" style="max-width:420px">
         <div class="card-body">
             <h6 class="card-title text-muted mb-2">응답 캐시</h6>
