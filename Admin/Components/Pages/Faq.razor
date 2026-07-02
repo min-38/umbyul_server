@@ -1,0 +1,188 @@
+@page "/faq"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>FAQ</PageTitle>
+
+<div class="page-header">
+    <h1>FAQ</h1>
+    <p class="subtitle">자주 묻는 질문을 로케일별로 작성·게시합니다. 정본은 en.</p>
+</div>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body d-flex align-items-center gap-2 py-2">
+            <span class="text-muted small">로케일</span>
+            <input class="form-control form-control-sm" style="width:110px" @bind="locale" />
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Load">불러오기</button>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 항목</button>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:4rem">순서</th><th>카테고리</th><th>질문</th><th style="width:5rem">상태</th><th style="width:3rem"></th></tr></thead>
+            <tbody>
+                @if (items.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-center text-muted py-4">이 로케일에 항목이 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var it in items)
+                    {
+                        <tr class="@(editing && it.Id == id ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(it)">
+                            <td class="text-muted">@it.SortOrder</td>
+                            <td>@(string.IsNullOrEmpty(it.Category) ? "—" : it.Category)</td>
+                            <td class="text-truncate" style="max-width:24rem">@it.Question</td>
+                            <td>
+                                @if (it.Published)
+                                {
+                                    <span class="badge bg-success">게시</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">초안</span>
+                                }
+                            </td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(it.Id)" @onclick:stopPropagation>삭제</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (editing)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    <span class="badge @(id is null ? "bg-primary" : "bg-secondary")">@(id is null ? "새 항목" : "편집")</span>
+                    <input class="form-control form-control-sm" style="width:160px" placeholder="카테고리" @bind="category" />
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">순서</span>
+                        <input type="number" class="form-control form-control-sm" style="width:80px" @bind="sortOrder" />
+                    </span>
+                    <div class="form-check ms-2">
+                        <input class="form-check-input" type="checkbox" id="pub" @bind="published" />
+                        <label class="form-check-label small" for="pub">게시</label>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
+                </div>
+
+                <input class="form-control form-control-sm mb-2" placeholder="질문" @bind="question" />
+
+                <ul class="nav nav-tabs mb-2">
+                    <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>답변 편집</button></li>
+                    <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
+                </ul>
+                @if (tab == "edit")
+                {
+                    <textarea class="form-control font-monospace" rows="10" @bind="answer" @bind:event="oninput" placeholder="답변 (마크다운)"></textarea>
+                }
+                else
+                {
+                    <div class="border rounded p-3" style="min-height:12rem">@((MarkupString)PreviewHtml)</div>
+                }
+
+                <div class="d-flex align-items-center gap-2 mt-3">
+                    <button class="btn btn-sm btn-primary" @onclick="Save">저장</button>
+                    @if (msg is not null)
+                    {
+                        <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<FaqRow> items = [];
+    private string locale = "en";
+    private bool editing;
+    private Guid? id;
+    private string category = "";
+    private string question = "";
+    private string answer = "";
+    private int sortOrder;
+    private bool published;
+    private string tab = "edit";
+    private string? msg;
+    private bool err;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        var loc = string.IsNullOrWhiteSpace(locale) ? "en" : locale.Trim();
+        locale = loc;
+        items = await Db.ListFaqAsync(loc);
+        editing = false;
+    }
+
+    private void NewItem()
+    {
+        editing = true;
+        id = null;
+        category = "";
+        question = "";
+        answer = "";
+        sortOrder = (items.Count > 0 ? items[^1].SortOrder : 0) + 10;
+        published = false;
+        tab = "edit";
+        msg = null;
+    }
+
+    private void Edit(FaqRow it)
+    {
+        editing = true;
+        id = it.Id;
+        category = it.Category;
+        question = it.Question;
+        answer = it.Answer;
+        sortOrder = it.SortOrder;
+        published = it.Published;
+        tab = "edit";
+        msg = null;
+    }
+
+    private void CloseEditor() { editing = false; msg = null; }
+
+    private async Task Save()
+    {
+        if (string.IsNullOrWhiteSpace(question)) { err = true; msg = "질문을 입력하세요."; return; }
+        id = await Db.SaveFaqAsync(id, locale, category, question, answer, sortOrder, published, await CurrentActor());
+        err = false;
+        msg = "저장됨";
+        await LoadKeepEditor();
+    }
+
+    private async Task Delete(Guid itemId)
+    {
+        await Db.DeleteFaqAsync(itemId, await CurrentActor());
+        if (id == itemId) editing = false;
+        items = await Db.ListFaqAsync(locale);
+    }
+
+    // 저장 후 목록만 갱신(편집기 유지).
+    private async Task LoadKeepEditor() => items = await Db.ListFaqAsync(locale);
+
+    private string PreviewHtml => Markdig.Markdown.ToHtml(answer ?? "");
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}
