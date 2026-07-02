@@ -78,18 +78,21 @@ public sealed class AdminDb(IConfiguration config)
         return list;
     }
 
-    public async Task SetReportStatusAsync(Guid id, string status, CancellationToken ct = default)
+    public async Task SetReportStatusAsync(Guid id, string status, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return;
         await using var conn = await OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("update public.reports set status = @s where id = @id", conn);
-        cmd.Parameters.AddWithValue("s", status);
-        cmd.Parameters.AddWithValue("id", id);
-        await cmd.ExecuteNonQueryAsync(ct);
+        await using (var cmd = new NpgsqlCommand("update public.reports set status = @s where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("s", status);
+            cmd.Parameters.AddWithValue("id", id);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, $"report.{status}", id.ToString(), null, ct);
     }
 
     /// 신고된 리뷰 삭제 + 해당 신고 resolved 처리.
-    public async Task DeleteRatingAndResolveAsync(Guid reportId, string ratingId, CancellationToken ct = default)
+    public async Task DeleteRatingAndResolveAsync(Guid reportId, string ratingId, Actor actor, CancellationToken ct = default)
     {
         if (!Configured || !Guid.TryParse(ratingId, out var rid)) return;
         await using var conn = await OpenAsync(ct);
@@ -98,9 +101,114 @@ public sealed class AdminDb(IConfiguration config)
             del.Parameters.AddWithValue("rid", rid);
             await del.ExecuteNonQueryAsync(ct);
         }
-        await using var upd = new NpgsqlCommand("update public.reports set status = 'resolved' where id = @id", conn);
-        upd.Parameters.AddWithValue("id", reportId);
-        await upd.ExecuteNonQueryAsync(ct);
+        await using (var upd = new NpgsqlCommand("update public.reports set status = 'resolved' where id = @id", conn))
+        {
+            upd.Parameters.AddWithValue("id", reportId);
+            await upd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, "rating.delete", ratingId, $"report {reportId}", ct);
+    }
+
+    // ── 관리자 계정 ──
+    public async Task<(Guid Id, string Username, string Hash)?> GetAdminAuthAsync(string username, CancellationToken ct = default)
+    {
+        if (!Configured) return null;
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select id, username, password_hash from public.admins where lower(username) = lower(@u)", conn);
+        cmd.Parameters.AddWithValue("u", username);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        return (r.GetGuid(0), r.GetString(1), r.GetString(2));
+    }
+
+    /// 부트스트랩: 해당 username이 없으면 생성(있으면 그대로 둠). 첫 관리자 시딩용.
+    /// 마이그레이션(0016) 전이면 조용히 스킵(앱 기동은 막지 않음).
+    public async Task EnsureBootstrapAdminAsync(string username, string passwordHash, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        try
+        {
+            await using var conn = await OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                """
+                insert into public.admins (username, password_hash) values (@u, @h)
+                on conflict (lower(username)) do nothing
+                """, conn);
+            cmd.Parameters.AddWithValue("u", username);
+            cmd.Parameters.AddWithValue("h", passwordHash);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (NpgsqlException) { /* 마이그레이션 전 등 — 기동 지속 */ }
+    }
+
+    public async Task<List<AdminRow>> ListAdminsAsync(CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("select id, username, created_at from public.admins order by created_at", conn);
+        var list = new List<AdminRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new AdminRow(r.GetGuid(0), r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+        return list;
+    }
+
+    /// 관리자 추가. 중복(username)이면 false.
+    public async Task<bool> CreateAdminAsync(string username, string passwordHash, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return false;
+        await using var conn = await OpenAsync(ct);
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                "insert into public.admins (username, password_hash) values (@u, @h)", conn);
+            cmd.Parameters.AddWithValue("u", username);
+            cmd.Parameters.AddWithValue("h", passwordHash);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (PostgresException e) when (e.SqlState == "23505") { return false; }
+        await LogAsync(conn, actor, "admin.create", username, null, ct);
+        return true;
+    }
+
+    // ── 감사 로그 ──
+    public async Task LogAsync(Actor actor, string action, string? target, string? detail, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await LogAsync(conn, actor, action, target, detail, ct);
+    }
+
+    private static async Task LogAsync(NpgsqlConnection conn, Actor actor, string action, string? target, string? detail, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(
+            """
+            insert into public.admin_actions (admin_id, admin_username, action, target, detail)
+            values (@id, @u, @a, @t, @d)
+            """, conn);
+        cmd.Parameters.AddWithValue("id", (object?)actor.Id ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("u", actor.Username);
+        cmd.Parameters.AddWithValue("a", action);
+        cmd.Parameters.AddWithValue("t", (object?)target ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("d", (object?)detail ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<List<AdminActionRow>> RecentActionsAsync(int limit, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select admin_username, action, target, detail, created_at from public.admin_actions order by created_at desc limit @n", conn);
+        cmd.Parameters.AddWithValue("n", limit);
+        var list = new List<AdminActionRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new AdminActionRow(r.GetString(0), r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3),
+                r.GetFieldValue<DateTimeOffset>(4)));
+        return list;
     }
 
     // ── Spotify 상태 ──
@@ -142,3 +250,8 @@ public sealed record ReportRow(
     string Status, DateTimeOffset CreatedAt, string? Title, string? Sub, string? Body);
 
 public sealed record SpotifyStatusRow(DateTimeOffset? BlockedUntil, int? RetryAfterSeconds, DateTimeOffset? UpdatedAt);
+
+/// 조치를 수행한 관리자(감사 로그용).
+public readonly record struct Actor(Guid? Id, string Username);
+public sealed record AdminRow(Guid Id, string Username, DateTimeOffset CreatedAt);
+public sealed record AdminActionRow(string AdminUsername, string Action, string? Target, string? Detail, DateTimeOffset CreatedAt);

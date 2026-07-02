@@ -1,7 +1,10 @@
 @page "/reports"
+@attribute [Authorize]
 @rendermode InteractiveServer
 @using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
 @inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
 
 <PageTitle>신고 처리</PageTitle>
 <h1>신고 처리</h1>
@@ -87,15 +90,22 @@ else
         reports = await Db.GetReportsAsync(status);
     }
 
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? id = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(id, user.Identity?.Name ?? "?");
+    }
+
     private async Task SetStatus(Guid id, string status)
     {
-        await Db.SetReportStatusAsync(id, status);
+        await Db.SetReportStatusAsync(id, status, await CurrentActor());
         await Load(filter);
     }
 
     private async Task DeleteReview(ReportRow r)
     {
-        await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId);
+        await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId, await CurrentActor());
         await Load(filter);
     }
 

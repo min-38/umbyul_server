@@ -1,0 +1,39 @@
+@page "/login"
+@layout EmptyLayout
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthState
+@inject NavigationManager Nav
+
+<PageTitle>로그인 · Glitter Admin</PageTitle>
+
+<div style="max-width:320px;margin:10vh auto;font-family:sans-serif">
+    <h1 style="font-size:1.4rem">Glitter Admin</h1>
+    @if (error)
+    {
+        <p style="color:#c00">아이디 또는 비밀번호가 올바르지 않습니다.</p>
+    }
+    <form method="post" action="/auth/login">
+        <AntiforgeryToken />
+        <div style="margin-bottom:.5rem">
+            <input name="username" placeholder="아이디" autofocus required
+                   style="width:100%;padding:.5rem;box-sizing:border-box" />
+        </div>
+        <div style="margin-bottom:.75rem">
+            <input name="password" type="password" placeholder="비밀번호" required
+                   style="width:100%;padding:.5rem;box-sizing:border-box" />
+        </div>
+        <button type="submit" style="width:100%;padding:.5rem;cursor:pointer">로그인</button>
+    </form>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public int Error { get; set; }
+    private bool error => Error == 1;
+
+    // 이미 로그인 상태면 홈으로.
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        if (user.Identity?.IsAuthenticated == true) Nav.NavigateTo("/", forceLoad: true);
+    }
+}
