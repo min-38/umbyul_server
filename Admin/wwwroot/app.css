@@ -1,10 +1,10 @@
 html, body {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    background-color: #f7f7fb;
+    background-color: #0e0f17; /* 다크 전용(NON-62) */
 }
 
 a, .btn-link {
-    color: #6d28d9;
+    color: #a78bfa; /* 다크 배경 가독성 */
 }
 
 .btn-primary {
@@ -50,9 +50,10 @@ a, .btn-link {
     }
 
 .card {
-    border: 1px solid #ececf2;
+    background-color: #171826;
+    border: 1px solid #262838;
     border-radius: 0.6rem;
-    box-shadow: 0 1px 3px rgba(16, 16, 40, 0.05);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .table > :not(caption) > * > * {

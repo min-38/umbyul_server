@@ -40,7 +40,7 @@ else
 {
     <div class="card">
     <table class="table table-sm table-hover align-middle mb-0">
-        <thead class="table-light">
+        <thead>
             <tr>
                 <th>대상</th><th>사유</th><th>상세</th><th>신고자</th><th>상태</th><th>시각</th><th class="text-end">조치</th>
             </tr>
@@ -82,7 +82,7 @@ else
                 </tr>
                 @if (openSanction == r.Id && r.OffenderId is { } oid)
                 {
-                    <tr class="table-light">
+                    <tr class="table-active">
                         <td colspan="7">
                             <div class="small text-muted mb-1">
                                 유저 제재 · @(r.OffenderName is null ? "(대상 유저)" : "@" + r.OffenderName)
