@@ -5,26 +5,29 @@
 @inject NavigationManager Nav
 @inject SessionGuard Guard
 
-@* 헤더용: 로그인 계정 + 세션 잔여시간(hh:mm:ss). 만료 시 진행 중 작업 완료 후 로그아웃(NON-49/53). *@
+@* 사이드바 하단용: 로그인 계정 + 세션 잔여시간(hh:mm:ss) + 연장/로그아웃.
+   만료 시 진행 중 작업 완료 후 로그아웃(NON-49/53/63). *@
 @if (username is not null)
 {
-    <span class="me-3 small text-secondary">
-        <span class="fw-semibold text-body">@username</span>
+    <div class="px-3 py-3">
+        <div class="fw-semibold text-white small text-truncate">@username</div>
         @if (waiting)
         {
-            <span class="ms-2 text-warning">· 만료 — 작업 완료 후 로그아웃…</span>
+            <div class="small text-warning">만료 — 작업 완료 후 로그아웃…</div>
         }
         else if (remaining is not null)
         {
-            <span class="ms-2">· 세션 <span class="font-monospace">@remaining</span></span>
+            <div class="small text-white-50">세션 <span class="font-monospace">@remaining</span></div>
         }
-    </span>
-    <form method="post" action="/auth/refresh" class="d-inline me-1">
-        <button type="submit" class="btn btn-sm btn-outline-primary">연장</button>
-    </form>
-    <form method="post" action="/auth/logout" class="d-inline">
-        <button type="submit" class="btn btn-sm btn-outline-secondary">로그아웃</button>
-    </form>
+        <div class="d-flex gap-1 mt-2">
+            <form method="post" action="/auth/refresh" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-outline-light">연장</button>
+            </form>
+            <form method="post" action="/auth/logout" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-outline-light">로그아웃</button>
+            </form>
+        </div>
+    </div>
 }
 
 @code {

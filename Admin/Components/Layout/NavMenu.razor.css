@@ -102,12 +102,21 @@
     color: white;
 }
 
-.nav-scrollable {
-    display: none;
+/* 모바일에서만 토글로 열고 닫음. (데스크톱은 아래 미디어쿼리에서 항상 flex —
+   체크 규칙이 데스크톱 flex 를 덮어써 레이아웃이 튀는 문제 방지) */
+@media (max-width: 640.98px) {
+    .nav-scrollable {
+        display: none;
+    }
+
+    .navbar-toggler:checked ~ .nav-scrollable {
+        display: block;
+    }
 }
 
-.navbar-toggler:checked ~ .nav-scrollable {
-    display: block;
+/* 세션 정보는 사이드바 바닥에 고정. */
+.session-footer {
+    margin-top: auto;
 }
 
 @media (min-width: 641px) {
@@ -117,7 +126,8 @@
 
     .nav-scrollable {
         /* Never collapse the sidebar for wide screens */
-        display: block;
+        display: flex;
+        flex-direction: column;
 
         /* Allow sidebar to scroll for tall menus */
         height: calc(100vh - 3.5rem);
