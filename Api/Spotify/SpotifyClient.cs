@@ -16,44 +16,60 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
     private string? _token;
     private DateTimeOffset _expiresAt;
 
+    // 서킷 브레이커: 429를 받으면 이 시각까지 Spotify를 아예 호출하지 않는다(fast-fail).
+    // 버스트가 penalty를 계속 리셋/연장하는 악순환을 끊고, Retry-After 동안 실제로 decay되게 함.
+    // Retry-After가 수 시간(확장 penalty)일 수 있어 앱 전체를 그만큼 막지 않도록 최대치로 캡하고,
+    // 캡 이후엔 소수의 프로브만 나가 penalty를 자연 만료시킨다.
+    private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
+    private DateTimeOffset _blockedUntil = DateTimeOffset.MinValue;
+
     public bool Configured => !string.IsNullOrEmpty(_clientId) && !string.IsNullOrEmpty(_clientSecret);
 
     /// 검색. 원시 JSON 문자열을 반환 — 호출부가 자기 스코프에서 파싱(JsonDocument 수명 문제 회피).
     /// 트랙은 external_ids.isrc 포함. 앨범 upc 는 search 응답엔 없어 GET /albums/{id} 필요(NON-5).
     public async Task<string> SearchAsync(string query, string types, int limit, int offset, CancellationToken ct)
     {
-        var token = await GetTokenAsync(ct);
         var url = $"https://api.spotify.com/v1/search?q={Uri.EscapeDataString(query)}" +
                   $"&type={Uri.EscapeDataString(types)}&limit={limit}&offset={offset}";
-        using var http = factory.CreateClient();
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        using var res = await http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode)
-        {
-            var body = await res.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"Spotify {(int)res.StatusCode} for {url} :: {body}");
-        }
-        return await res.Content.ReadAsStringAsync(ct);
+        var (status, body) = await RequestAsync(url, ct);
+        if (status != HttpStatusCode.OK)
+            throw new HttpRequestException($"Spotify {(int)status} for {url} :: {body}");
+        return body;
     }
 
     /// 임의 GET 엔드포인트(tracks/{id}, albums/{id}, artists/{id} 등). 원시 JSON 반환.
     /// 404 → null(존재하지 않는 리소스). 그 외 비정상 → HttpRequestException.
     public async Task<string?> GetAsync(string path, CancellationToken ct)
     {
-        var token = await GetTokenAsync(ct);
         var url = $"https://api.spotify.com/v1/{path}";
+        var (status, body) = await RequestAsync(url, ct);
+        if (status == HttpStatusCode.NotFound) return null;
+        if (status != HttpStatusCode.OK)
+            throw new HttpRequestException($"Spotify {(int)status} for {url} :: {body}");
+        return body;
+    }
+
+    // 공통 GET. 서킷 오픈 중이면 호출 없이 즉시 실패, 429면 Retry-After(캡)만큼 서킷을 연다.
+    private async Task<(HttpStatusCode Status, string Body)> RequestAsync(string url, CancellationToken ct)
+    {
+        if (DateTimeOffset.UtcNow < _blockedUntil)
+            throw new HttpRequestException($"Spotify rate-limited (circuit open until {_blockedUntil:O})");
+
+        var token = await GetTokenAsync(ct);
         using var http = factory.CreateClient();
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var res = await http.SendAsync(req, ct);
-        if (res.StatusCode == HttpStatusCode.NotFound) return null;
-        if (!res.IsSuccessStatusCode)
+        var body = await res.Content.ReadAsStringAsync(ct);
+
+        if ((int)res.StatusCode == 429)
         {
-            var body = await res.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"Spotify {(int)res.StatusCode} for {url} :: {body}");
+            var retry = res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
+            if (retry > MaxBackoff) retry = MaxBackoff; // 앱 전체를 수 시간 막지 않게 캡
+            _blockedUntil = DateTimeOffset.UtcNow.Add(retry);
+            throw new HttpRequestException($"Spotify 429 — backing off {retry.TotalSeconds:F0}s (Retry-After {res.Headers.RetryAfter?.Delta?.TotalSeconds:F0})");
         }
-        return await res.Content.ReadAsStringAsync(ct);
+        return (res.StatusCode, body);
     }
 
     private async Task<string> GetTokenAsync(CancellationToken ct)
