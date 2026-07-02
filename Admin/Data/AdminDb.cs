@@ -38,7 +38,7 @@ public sealed class AdminDb(IConfiguration config)
         await using var cmd = new NpgsqlCommand(
             """
             select rep.id, ru.username, rep.target_type, rep.target_id, rep.reason, rep.detail, rep.status, rep.created_at,
-                   rat.target_name, rat.target_artist, rat.review, rau.username, tu.username
+                   rat.id, rat.target_name, rat.target_artist, rat.review, rau.username, tu.username
             from public.reports rep
             join public.users ru on ru.id = rep.reporter_id
             left join public.ratings rat on rep.target_type = 'rating' and rat.id = rep.target_id::uuid
@@ -58,15 +58,25 @@ public sealed class AdminDb(IConfiguration config)
             string? title, sub, body;
             if (targetType == "rating")
             {
-                title = r.IsDBNull(8) ? "(삭제된 리뷰)" : r.GetString(8);
-                var artist = r.IsDBNull(9) ? null : r.GetString(9);
-                var author = r.IsDBNull(11) ? null : r.GetString(11);
-                sub = string.Join(" · ", new[] { artist, author is null ? null : $"by {author}" }.Where(x => x is not null));
-                body = r.IsDBNull(10) ? null : r.GetString(10);
+                var ratingExists = !r.IsDBNull(8); // rat.id — 존재 여부를 이름 유무와 구분
+                if (!ratingExists)
+                {
+                    title = "(삭제된 리뷰)";
+                    sub = null;
+                    body = null;
+                }
+                else
+                {
+                    title = r.IsDBNull(9) ? "(제목 미상)" : r.GetString(9); // target_name(캐시). 옛 평점은 null 가능
+                    var artist = r.IsDBNull(10) ? null : r.GetString(10);
+                    var author = r.IsDBNull(12) ? null : r.GetString(12);
+                    sub = string.Join(" · ", new[] { artist, author is null ? null : $"by {author}" }.Where(x => x is not null));
+                    body = r.IsDBNull(11) ? null : r.GetString(11);
+                }
             }
             else // user
             {
-                title = r.IsDBNull(12) ? "(알 수 없는 유저)" : $"@{r.GetString(12)}";
+                title = r.IsDBNull(13) ? "(알 수 없는 유저)" : $"@{r.GetString(13)}";
                 sub = null;
                 body = null;
             }
