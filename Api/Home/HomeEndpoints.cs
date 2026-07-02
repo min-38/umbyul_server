@@ -41,7 +41,7 @@ public static class HomeEndpoints
                    r.score, r.review, r.created_at, r.target_name, r.target_artist, r.target_image_url
             from public.ratings r
             join public.users u on u.id = r.user_id
-            where r.review is not null and r.review <> '' and r.target_spotify_id is not null {scope}
+            where r.review is not null and r.review <> '' and r.target_spotify_id is not null and r.deleted_at is null {scope}
             order by r.created_at desc
             limit 12
             """, conn);
@@ -67,7 +67,7 @@ public static class HomeEndpoints
             select r.target_type, r.target_spotify_id, count(*), round(avg(r.score), 2)::float8,
                    max(r.target_name), max(r.target_artist), max(r.target_image_url)
             from public.ratings r
-            where r.created_at > now() - interval '30 days' and r.target_spotify_id is not null
+            where r.created_at > now() - interval '30 days' and r.target_spotify_id is not null and r.deleted_at is null
             group by r.target_type, r.target_spotify_id
             order by count(*) desc, avg(r.score) desc
             limit 10

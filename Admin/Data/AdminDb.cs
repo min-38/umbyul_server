@@ -38,7 +38,7 @@ public sealed class AdminDb(IConfiguration config)
         await using var cmd = new NpgsqlCommand(
             """
             select rep.id, ru.username, rep.target_type, rep.target_id, rep.reason, rep.detail, rep.status, rep.created_at,
-                   rat.id, rat.target_name, rat.target_artist, rat.review, rau.username, tu.username
+                   rat.id, rat.target_name, rat.target_artist, rat.review, rau.username, tu.username, rat.deleted_at
             from public.reports rep
             join public.users ru on ru.id = rep.reporter_id
             left join public.ratings rat on rep.target_type = 'rating' and rat.id = rep.target_id::uuid
@@ -56,6 +56,7 @@ public sealed class AdminDb(IConfiguration config)
         {
             var targetType = r.GetString(2);
             string? title, sub, body;
+            var targetDeleted = false;
             if (targetType == "rating")
             {
                 var ratingExists = !r.IsDBNull(8); // rat.id — 존재 여부를 이름 유무와 구분
@@ -72,6 +73,7 @@ public sealed class AdminDb(IConfiguration config)
                     var author = r.IsDBNull(12) ? null : r.GetString(12);
                     sub = string.Join(" · ", new[] { artist, author is null ? null : $"by {author}" }.Where(x => x is not null));
                     body = r.IsDBNull(11) ? null : r.GetString(11);
+                    targetDeleted = !r.IsDBNull(14); // rat.deleted_at — 이미 소프트 삭제됨
                 }
             }
             else // user
@@ -83,7 +85,7 @@ public sealed class AdminDb(IConfiguration config)
             list.Add(new ReportRow(
                 r.GetGuid(0), r.GetString(1), targetType, r.GetString(3), r.GetString(4),
                 r.IsDBNull(5) ? null : r.GetString(5), r.GetString(6), r.GetFieldValue<DateTimeOffset>(7),
-                title, sub, body));
+                title, sub, body, targetDeleted));
         }
         return list;
     }
@@ -101,14 +103,22 @@ public sealed class AdminDb(IConfiguration config)
         await LogAsync(conn, actor, $"report.{status}", id.ToString(), null, ct);
     }
 
-    /// 신고된 리뷰 삭제 + 해당 신고 resolved 처리.
+    /// 신고된 리뷰 소프트 삭제(deleted_at) + 해당 신고 resolved 처리.
+    /// 하드 삭제 대신 흔적을 남겨 복구·감사·신고화면 표시가 가능. 이미 삭제된 건 건드리지 않음.
     public async Task DeleteRatingAndResolveAsync(Guid reportId, string ratingId, Actor actor, CancellationToken ct = default)
     {
         if (!Configured || !Guid.TryParse(ratingId, out var rid)) return;
         await using var conn = await OpenAsync(ct);
-        await using (var del = new NpgsqlCommand("delete from public.ratings where id = @rid", conn))
+        await using (var del = new NpgsqlCommand(
+            """
+            update public.ratings
+            set deleted_at = now(), deleted_by = @by, deleted_reason = @reason
+            where id = @rid and deleted_at is null
+            """, conn))
         {
             del.Parameters.AddWithValue("rid", rid);
+            del.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+            del.Parameters.AddWithValue("reason", $"report:{reportId}");
             await del.ExecuteNonQueryAsync(ct);
         }
         await using (var upd = new NpgsqlCommand("update public.reports set status = 'resolved' where id = @id", conn))
@@ -257,7 +267,7 @@ public sealed class AdminDb(IConfiguration config)
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,
-    string Status, DateTimeOffset CreatedAt, string? Title, string? Sub, string? Body);
+    string Status, DateTimeOffset CreatedAt, string? Title, string? Sub, string? Body, bool TargetDeleted);
 
 public sealed record SpotifyStatusRow(DateTimeOffset? BlockedUntil, int? RetryAfterSeconds, DateTimeOffset? UpdatedAt);
 

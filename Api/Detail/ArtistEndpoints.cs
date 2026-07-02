@@ -221,7 +221,7 @@ public static class ArtistEndpoints
                 """
                 select target_spotify_id, round(avg(score), 2)::float8, count(*)
                 from public.ratings
-                where target_spotify_id = any(@ids)
+                where target_spotify_id = any(@ids) and deleted_at is null
                 group by target_spotify_id
                 """, conn);
             cmd.Parameters.AddWithValue("ids", ids);
@@ -248,7 +248,7 @@ public static class ArtistEndpoints
                 select r.target_type, r.target_spotify_id, u.username, u.avatar_url, r.score, r.review, r.created_at
                 from public.ratings r
                 join public.users u on u.id = r.user_id
-                where r.target_spotify_id = any(@ids) and r.review is not null and r.review <> ''
+                where r.target_spotify_id = any(@ids) and r.review is not null and r.review <> '' and r.deleted_at is null
                 order by r.created_at desc
                 limit 10
                 """, conn);

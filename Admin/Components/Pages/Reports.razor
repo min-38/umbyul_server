@@ -50,6 +50,7 @@ else
                 <tr>
                     <td>
                         <span class="badge bg-secondary">@(r.TargetType == "rating" ? "리뷰" : "유저")</span>
+                        @if (r.TargetDeleted) { <span class="badge bg-dark">삭제됨</span> }
                         <strong>@r.Title</strong>
                         @if (r.Sub is not null) { <div class="small text-muted">@r.Sub</div> }
                         @if (r.Body is not null) { <div class="small">“@r.Body”</div> }
@@ -68,7 +69,7 @@ else
                         {
                             <button class="btn btn-sm btn-outline-success me-1" @onclick='() => SetStatus(r.Id, "resolved")'>해결</button>
                         }
-                        @if (r.TargetType == "rating")
+                        @if (r.TargetType == "rating" && !r.TargetDeleted)
                         {
                             <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteReview(r)">리뷰 삭제</button>
                         }

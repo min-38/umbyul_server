@@ -93,7 +93,7 @@ public static class DetailEndpoints
                 """
                 select target_spotify_id, round(avg(score), 2)::float8, count(*)
                 from public.ratings
-                where target_type = 'track' and target_spotify_id = any(@ids)
+                where target_type = 'track' and target_spotify_id = any(@ids) and deleted_at is null
                 group by target_spotify_id
                 """, conn);
             cmd.Parameters.AddWithValue("ids", trackIds.ToArray());
@@ -125,7 +125,7 @@ public static class DetailEndpoints
                 from public.ratings r
                 join public.users u on u.id = r.user_id
                 left join public.review_reactions re on re.rating_id = r.id
-                where r.target_type = @tt and r.target_id = @tid
+                where r.target_type = @tt and r.target_id = @tid and r.deleted_at is null
                 group by r.id, u.username, u.avatar_url
                 order by r.created_at desc
                 """, conn);
