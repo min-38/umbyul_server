@@ -1,0 +1,116 @@
+@page "/inquiries"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>문의</PageTitle>
+
+<div class="page-header">
+    <h1>문의</h1>
+    <p class="subtitle">접수된 문의를 열람하고 처리 완료를 표시합니다. 답변은 이메일로 직접 보내세요.</p>
+</div>
+
+<div class="mb-3 d-flex align-items-center gap-1">
+    <span class="text-muted small me-1">보기</span>
+    <button class="btn btn-sm @(filter == false ? "btn-primary" : "btn-outline-secondary")" @onclick="() => Load(false)">미처리</button>
+    <button class="btn btn-sm @(filter is null ? "btn-primary" : "btn-outline-secondary")" @onclick="() => Load(null)">전체</button>
+    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="() => Load(filter)">새로고침</button>
+</div>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else if (items is null)
+{
+    <p class="text-muted">불러오는 중…</p>
+}
+else if (items.Count == 0)
+{
+    <div class="card"><div class="card-body text-center text-muted py-5">문의가 없습니다.</div></div>
+}
+else
+{
+    <div class="card">
+    <table class="table table-sm table-hover align-middle mb-0">
+        <thead><tr><th>카테고리</th><th>이메일</th><th>제목</th><th>접수</th><th>상태</th><th class="text-end">처리</th></tr></thead>
+        <tbody>
+            @foreach (var q in items)
+            {
+                <tr style="cursor:pointer" @onclick="() => Toggle(q.Id)">
+                    <td>@(string.IsNullOrEmpty(q.Category) ? "—" : q.Category)</td>
+                    <td class="small"><a href="mailto:@q.Email" @onclick:stopPropagation>@q.Email</a></td>
+                    <td class="text-truncate" style="max-width:22rem">@q.Title</td>
+                    <td class="small text-muted">@q.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                    <td>
+                        @if (q.Handled)
+                        {
+                            <span class="badge bg-success">처리됨</span>
+                        }
+                        else
+                        {
+                            <span class="badge bg-warning text-dark">미처리</span>
+                        }
+                    </td>
+                    <td class="text-end" @onclick:stopPropagation>
+                        @if (q.Handled)
+                        {
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetHandled(q.Id, false)">되돌리기</button>
+                        }
+                        else
+                        {
+                            <button class="btn btn-sm btn-outline-success" @onclick="() => SetHandled(q.Id, true)">처리 완료</button>
+                        }
+                    </td>
+                </tr>
+                @if (openId == q.Id)
+                {
+                    <tr class="table-active">
+                        <td colspan="6">
+                            <div class="small text-muted mb-1">@q.Email · @q.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</div>
+                            <div class="fw-semibold mb-1">@q.Title</div>
+                            <div style="white-space:pre-wrap">@q.Content</div>
+                            <div class="mt-2">
+                                <a class="btn btn-sm btn-outline-primary" href="mailto:@q.Email?subject=@(Uri.EscapeDataString("[Glitter] Re: " + q.Title))">이메일로 답장</a>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+    </div>
+}
+
+@code {
+    private List<InquiryRow>? items;
+    private bool? filter = false; // 기본: 미처리
+    private Guid? openId;
+
+    protected override async Task OnInitializedAsync() => await Load(filter);
+
+    private async Task Load(bool? f)
+    {
+        filter = f;
+        items = null;
+        items = await Db.ListInquiriesAsync(f);
+    }
+
+    private void Toggle(Guid id) => openId = openId == id ? null : id;
+
+    private async Task SetHandled(Guid id, bool handled)
+    {
+        await Db.SetInquiryHandledAsync(id, handled, await CurrentActor());
+        await Load(filter);
+    }
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}
