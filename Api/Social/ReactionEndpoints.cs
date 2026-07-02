@@ -27,6 +27,7 @@ public static class ReactionEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
 
                 // 같은 값이면 삭제(토글 오프). 0건이면 없었거나 다른 값 → upsert.
                 await using (var del = new NpgsqlCommand(

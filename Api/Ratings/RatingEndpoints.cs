@@ -33,6 +33,7 @@ public static class RatingEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, Guid.Parse(id), default) is { } block) return Moderation.ToResult(block);
                 await using var cmd = new NpgsqlCommand(
                     """
                     insert into public.ratings

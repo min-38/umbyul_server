@@ -22,6 +22,12 @@ public static class ApiResults
     public static IResult NotFound(string code) =>
         Error<object?>(StatusCodes.Status404NotFound, code, null);
 
+    public static IResult Forbidden(string code) =>
+        Error<object?>(StatusCodes.Status403Forbidden, code, null);
+
+    public static IResult Forbidden<T>(string code, T data) =>
+        Error(StatusCodes.Status403Forbidden, code, data);
+
     public static IResult Conflict(string code) =>
         Error<object?>(StatusCodes.Status409Conflict, code, null);
 

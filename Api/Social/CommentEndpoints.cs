@@ -61,6 +61,7 @@ public static class CommentEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 await using var cmd = new NpgsqlCommand(
                     """
                     with ins as (
