@@ -71,6 +71,37 @@ public static class ProfileEndpoints
             });
         });
 
+        // 내 제재 상태(정지/영구정지) — 상단 배너 노출용(NON-55). 마이그레이션(0018) 전이면 제재 없음으로 fail-open.
+        me.MapGet("/sanction", async (ClaimsPrincipal user) =>
+        {
+            object None() => new { banned = false, suspendedUntil = (DateTimeOffset?)null, reason = (string?)null };
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    """
+                    select u.banned, u.suspended_until,
+                           (select s.reason from public.user_sanctions s
+                            where s.user_id = u.id and s.type in ('suspension', 'ban')
+                            order by s.created_at desc limit 1) as reason
+                    from public.users u where u.id = @id
+                    """, conn);
+                cmd.Parameters.AddWithValue("id", Guid.Parse(id));
+                await using var r = await cmd.ExecuteReaderAsync();
+                if (!await r.ReadAsync()) return ApiResults.Ok("OK", None());
+                var banned = !r.IsDBNull(0) && r.GetBoolean(0);
+                var until = r.IsDBNull(1) ? (DateTimeOffset?)null : r.GetFieldValue<DateTimeOffset>(1);
+                var reason = r.IsDBNull(2) ? null : r.GetString(2);
+                // 만료된 정지는 제재 아님.
+                if (!banned && (until is null || until <= DateTimeOffset.UtcNow)) return ApiResults.Ok("OK", None());
+                return ApiResults.Ok("OK", new { banned, suspendedUntil = banned ? (DateTimeOffset?)null : until, reason });
+            }
+            catch (NpgsqlException) { return ApiResults.Ok("OK", None()); } // 컬럼 미존재 등 — 통과
+        });
+
         // 프로비저닝 — body 또는 user_metadata(이메일 가입)에서 username/country/동의 취득. username UNIQUE 보장.
         me.MapPost("/profile", async (ProvisionRequest? body, ClaimsPrincipal user) =>
         {
