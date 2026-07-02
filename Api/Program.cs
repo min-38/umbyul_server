@@ -3,6 +3,7 @@ using Api.Account;
 using Api.Auth;
 using Api.Common;
 using Api.Detail;
+using Api.Discover;
 using Api.Faq;
 using Api.Home;
 using Api.Inquiry;
@@ -196,6 +197,9 @@ app.MapAccountEndpoints(dbConnString);
 
 // 홈 피드 (/home) — 공개(옵셔널 인증), DB만 조회 (NON-43)
 app.MapHomeEndpoints(dbConnString);
+
+// Discover (/discover) — 공개, DB만 조회: 신규·급상승 (NON-81)
+app.MapDiscoverEndpoints(dbConnString);
 
 // 약관/개인정보 (/legal/{type}) — 공개 조회 (NON-64)
 app.MapLegalEndpoints(dbConnString);
