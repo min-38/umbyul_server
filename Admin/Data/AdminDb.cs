@@ -573,9 +573,45 @@ public sealed class AdminDb(IConfiguration config)
         }
         await LogAsync(conn, actor, "faq.delete", id.ToString(), null, ct);
     }
+
+    // ── 문의 (NON-76) ──
+    public async Task<List<InquiryRow>> ListInquiriesAsync(bool? handled, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            select id, category, email, title, content, handled, created_at from public.inquiries
+            where @all or handled = @h
+            order by created_at desc limit 300
+            """, conn);
+        cmd.Parameters.AddWithValue("all", handled is null);
+        cmd.Parameters.AddWithValue("h", handled ?? false);
+        var list = new List<InquiryRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new InquiryRow(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.GetFieldValue<DateTimeOffset>(6)));
+        return list;
+    }
+
+    public async Task SetInquiryHandledAsync(Guid id, bool handled, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using (var cmd = new NpgsqlCommand(
+            "update public.inquiries set handled = @h, handled_at = case when @h then now() else null end, handled_by = case when @h then @by else null end where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("h", handled);
+            cmd.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("id", id);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, handled ? "inquiry.handled" : "inquiry.reopen", id.ToString(), null, ct);
+    }
 }
 
 public sealed record FaqRow(Guid Id, string Category, string Question, string Answer, int SortOrder, bool Published, DateTimeOffset UpdatedAt);
+public sealed record InquiryRow(Guid Id, string Category, string Email, string Title, string Content, bool Handled, DateTimeOffset CreatedAt);
 public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
 public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt, bool IsCurrent, DateOnly? EffectiveDate);
 

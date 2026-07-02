@@ -5,6 +5,7 @@ using Api.Common;
 using Api.Detail;
 using Api.Faq;
 using Api.Home;
+using Api.Inquiry;
 using Api.Legal;
 using Api.Profile;
 using Api.Ratings;
@@ -201,6 +202,9 @@ app.MapLegalEndpoints(dbConnString);
 
 // FAQ (/faq) — 공개 조회 (NON-73)
 app.MapFaqEndpoints(dbConnString);
+
+// 문의 (/inquiries) — 공개 접수 (NON-76)
+app.MapInquiryEndpoints(dbConnString);
 
 app.Run();
 
