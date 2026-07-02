@@ -424,18 +424,21 @@ public sealed class AdminDb(IConfiguration config)
         return (r.GetString(0), r.GetBoolean(1));
     }
 
+    // 초안 저장. publish=true 면 legal_versions 에 불변 스냅샷도 남긴다(NON-69).
     public async Task SaveLegalDocAsync(string type, string locale, string content, bool published, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return;
         await using var conn = await OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
         await using (var cmd = new NpgsqlCommand(
             """
             insert into public.legal_documents (type, locale, content, published, updated_at, updated_by)
             values (@t, @l, @c, @p, now(), @by)
             on conflict (type, locale) do update
-                set content = excluded.content, published = excluded.published,
+                set content = excluded.content, published = legal_documents.published or excluded.published,
                     updated_at = now(), updated_by = excluded.updated_by
-            """, conn))
+            """, conn, tx))
         {
             cmd.Parameters.AddWithValue("t", type);
             cmd.Parameters.AddWithValue("l", locale);
@@ -444,11 +447,54 @@ public sealed class AdminDb(IConfiguration config)
             cmd.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync(ct);
         }
+
+        if (published)
+        {
+            await using var ver = new NpgsqlCommand(
+                """
+                insert into public.legal_versions (type, locale, content, published_by)
+                values (@t, @l, @c, @by)
+                """, conn, tx);
+            ver.Parameters.AddWithValue("t", type);
+            ver.Parameters.AddWithValue("l", locale);
+            ver.Parameters.AddWithValue("c", content);
+            ver.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+            await ver.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
         await LogAsync(conn, actor, published ? "legal.publish" : "legal.save", $"{type}/{locale}", null, ct);
+    }
+
+    // 게시 버전 이력(최신순).
+    public async Task<List<LegalVersionRow>> ListLegalVersionsAsync(string type, string locale, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select id, published_at from public.legal_versions where type = @t and locale = @l order by published_at desc limit 50", conn);
+        cmd.Parameters.AddWithValue("t", type);
+        cmd.Parameters.AddWithValue("l", locale);
+        var list = new List<LegalVersionRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new LegalVersionRow(r.GetGuid(0), r.GetFieldValue<DateTimeOffset>(1)));
+        return list;
+    }
+
+    // 특정 버전 원문(롤백·보기용).
+    public async Task<string?> GetLegalVersionContentAsync(Guid versionId, CancellationToken ct = default)
+    {
+        if (!Configured) return null;
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand("select content from public.legal_versions where id = @id", conn);
+        cmd.Parameters.AddWithValue("id", versionId);
+        return await cmd.ExecuteScalarAsync(ct) as string;
     }
 }
 
 public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
+public sealed record LegalVersionRow(Guid Id, DateTimeOffset PublishedAt);
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,

@@ -17,12 +17,12 @@ public static class LegalEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
-                // 요청 로케일 게시본 우선, 없으면 en. 둘 다 없으면 404.
+                // 요청 로케일의 최신 게시 버전 우선, 없으면 en 최신. 둘 다 없으면 404. (NON-69 버전 이력)
                 await using var cmd = new NpgsqlCommand(
                     """
-                    select locale, content, updated_at from public.legal_documents
-                    where type = @type and published and locale in (@loc, 'en')
-                    order by (locale = @loc) desc
+                    select locale, content, published_at from public.legal_versions
+                    where type = @type and locale in (@loc, 'en')
+                    order by (locale = @loc) desc, published_at desc
                     limit 1
                     """, conn);
                 cmd.Parameters.AddWithValue("type", type);
