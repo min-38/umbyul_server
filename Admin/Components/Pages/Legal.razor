@@ -10,7 +10,7 @@
 
 <div class="page-header">
     <h1>약관 · 개인정보</h1>
-    <p class="subtitle">이용약관/개인정보처리방침을 로케일별로 작성·게시합니다. 정본은 en.</p>
+    <p class="subtitle">이용약관/개인정보처리방침을 로케일별로 작성·게시하고 버전을 남깁니다. 정본은 en.</p>
 </div>
 
 @if (!Db.Configured)
@@ -20,18 +20,22 @@
 else
 {
     <div class="card mb-4">
+        <div class="card-body d-flex justify-content-between align-items-center py-2">
+            <h6 class="text-muted mb-0">문서 목록</h6>
+            <button class="btn btn-sm btn-primary" @onclick="NewDoc">+ 새 문서 작성</button>
+        </div>
         <table class="table table-sm table-hover align-middle mb-0">
             <thead><tr><th>종류</th><th>로케일</th><th>상태</th><th>최종 수정</th></tr></thead>
             <tbody>
                 @if (docs.Count == 0)
                 {
-                    <tr><td colspan="4" class="text-center text-muted py-4">아직 문서가 없습니다.</td></tr>
+                    <tr><td colspan="4" class="text-center text-muted py-4">아직 문서가 없습니다. "새 문서 작성"으로 시작하세요.</td></tr>
                 }
                 else
                 {
                     @foreach (var d in docs)
                     {
-                        <tr class="@(loaded && d.Type == type && d.Locale == locale ? "table-active" : "")" style="cursor:pointer" @onclick="() => Load(d.Type, d.Locale)">
+                        <tr class="@(editing && !isNew && d.Type == type && d.Locale == locale ? "table-active" : "")" style="cursor:pointer" @onclick="() => EditExisting(d.Type, d.Locale)">
                             <td>@TypeLabel(d.Type)</td>
                             <td class="font-monospace">@d.Locale</td>
                             <td>
@@ -52,127 +56,159 @@ else
         </table>
     </div>
 
-    <div class="card">
-        <div class="card-body">
-            <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
-                <select class="form-select form-select-sm" style="width:auto" @bind="type">
-                    <option value="terms">이용약관</option>
-                    <option value="privacy">개인정보처리방침</option>
-                </select>
-                <input class="form-control form-control-sm" style="width:110px" placeholder="로케일(en)" @bind="locale" />
-                <button class="btn btn-sm btn-outline-secondary" @onclick="NewBlank">새 문서(비우기)</button>
-                @if (published)
-                {
-                    <span class="badge bg-success">현재 게시됨</span>
-                }
-                @if (msg is not null)
-                {
-                    <span class="small text-success">@msg</span>
-                }
-            </div>
-
-            <ul class="nav nav-tabs mb-2">
-                <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>편집</button></li>
-                <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
-            </ul>
-
-            @if (tab == "edit")
-            {
-                <textarea class="form-control font-monospace" rows="20" @bind="content" @bind:event="oninput" placeholder="마크다운으로 작성"></textarea>
-            }
-            else
-            {
-                <div class="border rounded p-3" style="min-height:24rem">@((MarkupString)PreviewHtml)</div>
-            }
-
-            <div class="d-flex gap-2 mt-3">
-                <button class="btn btn-sm btn-outline-secondary" @onclick="() => Save(false)">초안 저장</button>
-                <button class="btn btn-sm btn-primary" @onclick="() => Save(true)">게시</button>
-            </div>
-
-            @if (loaded && versions.Count > 0)
-            {
-                <div class="mt-4">
-                    <h6 class="text-muted small mb-2">게시 이력 (@TypeLabel(type) · @locale)</h6>
-                    <ul class="list-unstyled small mb-0">
-                        @for (int i = 0; i < versions.Count; i++)
+    @if (editing)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    @if (isNew)
+                    {
+                        <select class="form-select form-select-sm" style="width:auto" @bind="type">
+                            <option value="terms">이용약관</option>
+                            <option value="privacy">개인정보처리방침</option>
+                        </select>
+                        <input class="form-control form-control-sm" style="width:120px" placeholder="로케일(en)" @bind="locale" />
+                        <span class="badge bg-primary">새 문서</span>
+                    }
+                    else
+                    {
+                        <strong>@TypeLabel(type) · <span class="font-monospace">@locale</span></strong>
+                        @if (published)
                         {
-                            var v = versions[i];
-                            <li class="d-flex align-items-center gap-2 py-1">
-                                <span class="font-monospace">@v.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
-                                @if (i == 0)
-                                {
-                                    <span class="badge bg-success">현재 공개</span>
-                                }
-                                <button class="btn btn-link btn-sm p-0" @onclick="() => LoadVersion(v.Id)">이 내용 불러오기</button>
-                            </li>
+                            <span class="badge bg-success">게시됨</span>
                         }
-                    </ul>
+                    }
+                    <input class="form-control form-control-sm" style="width:160px" placeholder="버전 (예: v1.01)" @bind="version" />
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
                 </div>
-            }
+
+                <ul class="nav nav-tabs mb-2">
+                    <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>편집</button></li>
+                    <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
+                </ul>
+
+                @if (tab == "edit")
+                {
+                    <textarea class="form-control font-monospace" rows="20" @bind="content" @bind:event="oninput" placeholder="마크다운으로 작성"></textarea>
+                }
+                else
+                {
+                    <div class="border rounded p-3" style="min-height:24rem">@((MarkupString)PreviewHtml)</div>
+                }
+
+                <div class="d-flex align-items-center gap-2 mt-3">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => Save(false)">초안 저장</button>
+                    <button class="btn btn-sm btn-primary" @onclick="() => Save(true)">게시</button>
+                    @if (msg is not null)
+                    {
+                        <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                </div>
+
+                @if (!isNew && versions.Count > 0)
+                {
+                    <div class="mt-4">
+                        <h6 class="text-muted small mb-2">게시 이력</h6>
+                        <ul class="list-unstyled small mb-0">
+                            @for (int i = 0; i < versions.Count; i++)
+                            {
+                                var v = versions[i];
+                                <li class="d-flex align-items-center gap-2 py-1">
+                                    <span class="badge bg-body-tertiary text-body border font-monospace">@(string.IsNullOrEmpty(v.Version) ? "—" : v.Version)</span>
+                                    <span class="text-muted">@v.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                                    @if (i == 0)
+                                    {
+                                        <span class="badge bg-success">현재 공개</span>
+                                    }
+                                    <button class="btn btn-link btn-sm p-0" @onclick="() => LoadVersion(v.Id)">이 내용 불러오기</button>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+            </div>
         </div>
-    </div>
+    }
 }
 
 @code {
     private List<LegalDocRow> docs = [];
     private List<LegalVersionRow> versions = [];
+    private bool editing;
+    private bool isNew;
     private string type = "terms";
     private string locale = "en";
     private string content = "";
+    private string version = "";
     private bool published;
-    private bool loaded;      // 목록에서 불러온 상태(행 하이라이트용)
     private string tab = "edit";
     private string? msg;
+    private bool err;
 
     protected override async Task OnInitializedAsync() => await LoadList();
 
     private async Task LoadList() => docs = await Db.ListLegalDocsAsync();
 
-    private async Task Load(string t, string l)
+    private void NewDoc()
     {
-        type = t;
-        locale = string.IsNullOrWhiteSpace(l) ? "en" : l.Trim();
+        editing = true;
+        isNew = true;
+        type = "terms";
+        locale = "";
+        content = "";
+        version = "";
+        published = false;
+        versions = [];
+        tab = "edit";
         msg = null;
+    }
+
+    private async Task EditExisting(string t, string l)
+    {
+        editing = true;
+        isNew = false;
+        type = t;
+        locale = l;
+        msg = null;
+        tab = "edit";
         var doc = await Db.GetLegalDocAsync(type, locale);
         content = doc?.Content ?? "";
         published = doc?.Published ?? false;
-        loaded = true;
-        tab = "edit";
         versions = await Db.ListLegalVersionsAsync(type, locale);
+        version = versions.Count > 0 ? versions[0].Version ?? "" : ""; // 최신 버전 라벨 프리필(bump 용)
     }
 
-    // 현재 종류/로케일로 새 문서 작성(편집기 비우기).
-    private void NewBlank()
+    private void CloseEditor()
     {
-        content = "";
-        published = false;
-        loaded = false;
-        versions = [];
+        editing = false;
         msg = null;
-        tab = "edit";
     }
 
     private async Task Save(bool publish)
     {
-        var loc = string.IsNullOrWhiteSpace(locale) ? "en" : locale.Trim();
-        await Db.SaveLegalDocAsync(type, loc, content, publish, await CurrentActor());
+        var loc = (locale ?? "").Trim();
+        if (loc.Length == 0) { err = true; msg = "로케일을 입력하세요 (예: en)."; return; }
+        if (publish && string.IsNullOrWhiteSpace(version)) { err = true; msg = "게시하려면 버전을 입력하세요 (예: v1.01)."; return; }
+
+        await Db.SaveLegalDocAsync(type, loc, content, version, publish, await CurrentActor());
         locale = loc;
+        isNew = false;
         published = published || publish;
-        loaded = true;
-        msg = publish ? "게시됨(새 버전 기록)" : "초안 저장됨";
+        err = false;
+        msg = publish ? $"게시됨 ({version})" : "초안 저장됨";
         await LoadList();
         versions = await Db.ListLegalVersionsAsync(type, locale);
     }
 
-    // 과거 게시 버전 내용을 편집기(초안)로 불러옴. 게시 전까지 공개엔 반영 안 됨.
+    // 과거 게시 버전 내용을 편집기(초안)로 불러옴. 게시해야 공개 반영.
     private async Task LoadVersion(Guid id)
     {
         var c = await Db.GetLegalVersionContentAsync(id);
         if (c is null) return;
         content = c;
         tab = "edit";
-        msg = "이전 버전을 편집기에 불러왔습니다(게시해야 공개 반영).";
+        err = false;
+        msg = "이전 버전을 편집기에 불러왔습니다 (게시해야 공개 반영).";
     }
 
     private string PreviewHtml => Markdig.Markdown.ToHtml(content ?? "");

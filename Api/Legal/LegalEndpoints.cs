@@ -17,10 +17,10 @@ public static class LegalEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
-                // 요청 로케일의 최신 게시 버전 우선, 없으면 en 최신. 둘 다 없으면 404. (NON-69 버전 이력)
+                // 요청 로케일의 최신 게시 버전 우선, 없으면 en 최신. 둘 다 없으면 404. (NON-69/70)
                 await using var cmd = new NpgsqlCommand(
                     """
-                    select locale, content, published_at from public.legal_versions
+                    select locale, content, published_at, version from public.legal_versions
                     where type = @type and locale in (@loc, 'en')
                     order by (locale = @loc) desc, published_at desc
                     limit 1
@@ -35,6 +35,7 @@ public static class LegalEndpoints
                     locale = r.GetString(0),
                     content = r.GetString(1),
                     updatedAt = r.GetFieldValue<DateTimeOffset>(2),
+                    version = r.IsDBNull(3) ? null : r.GetString(3),
                 });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
