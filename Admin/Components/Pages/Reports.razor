@@ -5,6 +5,7 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @inject AdminDb Db
 @inject AuthenticationStateProvider AuthState
+@inject SessionGuard Guard
 
 <PageTitle>신고 처리</PageTitle>
 
@@ -124,13 +125,15 @@ else
 
     private async Task SetStatus(Guid id, string status)
     {
-        await Db.SetReportStatusAsync(id, status, await CurrentActor());
+        using (Guard.Work())
+            await Db.SetReportStatusAsync(id, status, await CurrentActor());
         await Load(filter);
     }
 
     private async Task DeleteReview(ReportRow r)
     {
-        await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId, await CurrentActor());
+        using (Guard.Work())
+            await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId, await CurrentActor());
         await Load(filter);
     }
 

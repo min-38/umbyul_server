@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Admin.Components;
 using Admin.Data;
+using Admin.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 
@@ -11,6 +12,7 @@ var SessionDuration = TimeSpan.FromHours(1); // 관리자 세션 유효기간(�
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<AdminDb>();
+builder.Services.AddScoped<SessionGuard>(); // 서킷당 진행 중 작업 추적(NON-53)
 
 // 관리자 계정(별도 admins 테이블) + 쿠키 세션.
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -57,21 +59,22 @@ app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db) =>
     var admin = await db.GetAdminAuthAsync(username);
     if (admin is { } a && BCrypt.Net.BCrypt.Verify(password, a.Hash))
     {
-        var expiresAt = DateTimeOffset.UtcNow.Add(SessionDuration);
-        var identity = new ClaimsIdentity(
-            [
-                new Claim(ClaimTypes.NameIdentifier, a.Id.ToString()),
-                new Claim(ClaimTypes.Name, a.Username),
-                new Claim("session_exp", expiresAt.ToUnixTimeSeconds().ToString()), // 헤더 잔여시간·자동 로그아웃용
-            ],
-            CookieAuthenticationDefaults.AuthenticationScheme);
-        await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity),
-            new AuthenticationProperties { ExpiresUtc = expiresAt });
+        await SignInAdminAsync(ctx, a.Id, a.Username, SessionDuration);
         await db.LogAsync(new Actor(a.Id, a.Username), "login", null, null);
         return Results.Redirect("/");
     }
     return Results.Redirect("/login?error=1");
 }).DisableAntiforgery();
+
+// 세션 연장: 인증 상태면 새 만료(1h)로 쿠키 재발급 후 원래 페이지로(NON-53).
+app.MapPost("/auth/refresh", async (HttpContext ctx) =>
+{
+    if (ctx.User.Identity?.IsAuthenticated != true) return Results.Redirect("/login");
+    Guid.TryParse(ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id);
+    await SignInAdminAsync(ctx, id, ctx.User.Identity.Name ?? "", SessionDuration);
+    var back = ctx.Request.Headers.Referer.ToString();
+    return Results.Redirect(string.IsNullOrEmpty(back) ? "/" : back);
+}).RequireAuthorization().DisableAntiforgery();
 
 app.MapPost("/auth/logout", async (HttpContext ctx) =>
 {
@@ -84,3 +87,18 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+// 관리자 쿠키 재발급(로그인·연장 공용): 고정 만료 + session_exp claim.
+static async Task SignInAdminAsync(HttpContext ctx, Guid id, string username, TimeSpan duration)
+{
+    var expiresAt = DateTimeOffset.UtcNow.Add(duration);
+    var identity = new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.NameIdentifier, id.ToString()),
+            new Claim(ClaimTypes.Name, username),
+            new Claim("session_exp", expiresAt.ToUnixTimeSeconds().ToString()),
+        ],
+        CookieAuthenticationDefaults.AuthenticationScheme);
+    await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity),
+        new AuthenticationProperties { ExpiresUtc = expiresAt });
+}

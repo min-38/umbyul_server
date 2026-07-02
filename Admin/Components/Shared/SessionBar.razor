@@ -1,18 +1,27 @@
 @using Microsoft.AspNetCore.Components.Authorization
+@using Admin.Services
 @implements IDisposable
 @inject AuthenticationStateProvider AuthState
 @inject NavigationManager Nav
+@inject SessionGuard Guard
 
-@* 헤더용: 로그인 계정 + 세션 잔여시간. 만료 도달 시 자동 로그아웃(NON-49). *@
+@* 헤더용: 로그인 계정 + 세션 잔여시간(hh:mm:ss). 만료 시 진행 중 작업 완료 후 로그아웃(NON-49/53). *@
 @if (username is not null)
 {
     <span class="me-3 small text-secondary">
         <span class="fw-semibold text-body">@username</span>
-        @if (remaining is not null)
+        @if (waiting)
+        {
+            <span class="ms-2 text-warning">· 만료 — 작업 완료 후 로그아웃…</span>
+        }
+        else if (remaining is not null)
         {
             <span class="ms-2">· 세션 <span class="font-monospace">@remaining</span></span>
         }
     </span>
+    <form method="post" action="/auth/refresh" class="d-inline me-1">
+        <button type="submit" class="btn btn-sm btn-outline-primary">연장</button>
+    </form>
     <form method="post" action="/auth/logout" class="d-inline">
         <button type="submit" class="btn btn-sm btn-outline-secondary">로그아웃</button>
     </form>
@@ -22,6 +31,7 @@
     private string? username;
     private DateTimeOffset? expiresAt;
     private string? remaining;
+    private bool waiting; // 만료됐지만 진행 중 작업 대기 중
     private Timer? timer;
 
     protected override async Task OnInitializedAsync()
@@ -41,11 +51,19 @@
         var left = e - DateTimeOffset.UtcNow;
         if (left <= TimeSpan.Zero)
         {
+            remaining = "00:00:00";
+            if (Guard.Busy) // 진행 중 작업이 끝날 때까지 로그아웃 보류(다음 tick에 재확인).
+            {
+                waiting = true;
+                InvokeAsync(StateHasChanged);
+                return;
+            }
             timer?.Dispose();
             timer = null;
             InvokeAsync(() => Nav.NavigateTo("/auth/logout", forceLoad: true));
             return;
         }
+        waiting = false;
         remaining = $"{(int)left.TotalHours:D2}:{left.Minutes:D2}:{left.Seconds:D2}";
         InvokeAsync(StateHasChanged);
     }
