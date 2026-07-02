@@ -76,7 +76,8 @@ app.MapPost("/auth/refresh", async (HttpContext ctx) =>
     return Results.Redirect(string.IsNullOrEmpty(back) ? "/" : back);
 }).RequireAuthorization().DisableAntiforgery();
 
-app.MapPost("/auth/logout", async (HttpContext ctx) =>
+// GET+POST 모두 허용: 버튼은 form POST, 세션 만료 자동 로그아웃은 full navigation(GET)이라(NON-67).
+app.MapMethods("/auth/logout", ["GET", "POST"], async (HttpContext ctx) =>
 {
     await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
     return Results.Redirect("/login");
