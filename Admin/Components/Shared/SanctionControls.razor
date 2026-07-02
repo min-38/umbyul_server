@@ -1,0 +1,75 @@
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+@* 유저 제재 부여(경고/기간정지/영구정지/해제). 유저 관리·신고 화면에서 공통 사용. *@
+<div class="d-flex flex-wrap align-items-center gap-1">
+    <input class="form-control form-control-sm" style="width:150px" placeholder="사유(선택)" @bind="reason" />
+    <select class="form-select form-select-sm" style="width:auto" @bind="hours">
+        <option value="1">1시간</option>
+        <option value="24">1일</option>
+        <option value="72">3일</option>
+        <option value="168">7일</option>
+        <option value="720">30일</option>
+    </select>
+    <button class="btn btn-sm btn-outline-warning" @onclick="Suspend">정지</button>
+    <button class="btn btn-sm btn-outline-secondary" @onclick="Warn">경고</button>
+    <button class="btn btn-sm btn-outline-danger" @onclick="Ban">영구정지</button>
+    <button class="btn btn-sm btn-outline-success" @onclick="Unban">해제</button>
+</div>
+@if (msg is not null)
+{
+    <div class="small text-success mt-1">@msg</div>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid UserId { get; set; }
+    [Parameter] public Guid? ReportId { get; set; }
+    [Parameter] public EventCallback OnDone { get; set; }
+
+    private string reason = "";
+    private int hours = 24;
+    private string? msg;
+
+    private async Task Warn()
+    {
+        await Db.WarnUserAsync(UserId, R(), await CurrentActor(), ReportId);
+        await Done("경고 부여됨");
+    }
+
+    private async Task Suspend()
+    {
+        var until = DateTimeOffset.UtcNow.AddHours(hours);
+        await Db.SuspendUserAsync(UserId, until, R(), await CurrentActor(), ReportId);
+        await Done($"정지: {until.ToLocalTime():yyyy-MM-dd HH:mm}까지");
+    }
+
+    private async Task Ban()
+    {
+        await Db.BanUserAsync(UserId, R(), await CurrentActor(), ReportId);
+        await Done("영구정지됨");
+    }
+
+    private async Task Unban()
+    {
+        await Db.UnbanUserAsync(UserId, await CurrentActor(), ReportId);
+        await Done("해제됨");
+    }
+
+    private string? R() => string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+
+    private async Task Done(string m)
+    {
+        msg = m;
+        reason = "";
+        await OnDone.InvokeAsync();
+    }
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? id = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(id, user.Identity?.Name ?? "?");
+    }
+}

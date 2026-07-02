@@ -71,10 +71,25 @@ else
                         }
                         @if (r.TargetType == "rating" && !r.TargetDeleted)
                         {
-                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteReview(r)">리뷰 삭제</button>
+                            <button class="btn btn-sm btn-outline-danger me-1" @onclick="() => DeleteReview(r)">리뷰 삭제</button>
+                        }
+                        @if (r.OffenderId is not null)
+                        {
+                            <button class="btn btn-sm btn-outline-dark" @onclick="() => ToggleSanction(r.Id)">유저 제재</button>
                         }
                     </td>
                 </tr>
+                @if (openSanction == r.Id && r.OffenderId is { } oid)
+                {
+                    <tr class="table-light">
+                        <td colspan="7">
+                            <div class="small text-muted mb-1">
+                                유저 제재 · @(r.OffenderName is null ? "(대상 유저)" : "@" + r.OffenderName)
+                            </div>
+                            <SanctionControls UserId="oid" ReportId="r.Id" OnDone="() => Load(filter)" />
+                        </td>
+                    </tr>
+                }
             }
         </tbody>
     </table>
@@ -87,8 +102,11 @@ else
 
     private List<ReportRow>? reports;
     private string filter = "pending";
+    private Guid? openSanction;
 
     protected override async Task OnInitializedAsync() => await Load(filter);
+
+    private void ToggleSanction(Guid reportId) => openSanction = openSanction == reportId ? null : reportId;
 
     private async Task Load(string status)
     {

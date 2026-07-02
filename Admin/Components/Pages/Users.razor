@@ -1,0 +1,138 @@
+@page "/users"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Admin.Data
+@inject AdminDb Db
+
+<PageTitle>유저 관리</PageTitle>
+
+<div class="page-header">
+    <h1>유저 관리</h1>
+    <p class="subtitle">유저를 검색하고 경고·정지·영구정지를 부여합니다.</p>
+</div>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="mb-3 d-flex gap-2" style="max-width:420px">
+        <input class="form-control form-control-sm" placeholder="유저명 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+        <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load">검색</button>
+    </div>
+
+    @if (users is null)
+    {
+        <p class="text-muted">불러오는 중…</p>
+    }
+    else if (users.Count == 0)
+    {
+        <div class="card"><div class="card-body text-center text-muted py-5">유저가 없습니다.</div></div>
+    }
+    else
+    {
+        <div class="card">
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light">
+                <tr><th>유저</th><th>가입</th><th>상태</th><th class="text-center">신고</th><th>제재</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var u in users)
+                {
+                    <tr>
+                        <td>
+                            <strong>@u.Username</strong>
+                            <button class="btn btn-link btn-sm p-0 ms-2 small" @onclick="() => ToggleHistory(u.Id)">이력</button>
+                        </td>
+                        <td class="small text-muted">@u.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                        <td>
+                            @if (u.Banned)
+                            {
+                                <span class="badge bg-dark">영구정지</span>
+                            }
+                            else if (u.SuspendedUntil is { } su && su > DateTimeOffset.UtcNow)
+                            {
+                                <span class="badge bg-warning text-dark">정지 ~@su.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-light text-secondary border">정상</span>
+                            }
+                        </td>
+                        <td class="text-center small">@(u.ReportCount > 0 ? u.ReportCount.ToString() : "-")</td>
+                        <td><SanctionControls UserId="u.Id" OnDone="Load" /></td>
+                    </tr>
+                    @if (openHistory == u.Id)
+                    {
+                        <tr>
+                            <td colspan="5" class="bg-light">
+                                @if (history is null)
+                                {
+                                    <span class="small text-muted">불러오는 중…</span>
+                                }
+                                else if (history.Count == 0)
+                                {
+                                    <span class="small text-muted">제재 이력 없음</span>
+                                }
+                                else
+                                {
+                                    <ul class="small mb-0 ps-3">
+                                        @foreach (var s in history)
+                                        {
+                                            <li>
+                                                <span class="fw-semibold">@SanctionLabel(s.Type)</span>
+                                                @if (s.Until is { } until) { <text> (~@until.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))</text> }
+                                                @if (s.Reason is not null) { <text> · @s.Reason</text> }
+                                                <span class="text-muted"> · @s.AdminUsername · @s.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                                            </li>
+                                        }
+                                    </ul>
+                                }
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+        </div>
+    }
+}
+
+@code {
+    private List<UserRow>? users;
+    private string search = "";
+    private Guid? openHistory;
+    private List<SanctionRow>? history;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        users = null;
+        users = await Db.ListUsersAsync(search);
+        if (openHistory is { } id) history = await Db.GetUserSanctionsAsync(id); // 열려있으면 갱신
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Load();
+    }
+
+    private async Task ToggleHistory(Guid id)
+    {
+        if (openHistory == id) { openHistory = null; history = null; return; }
+        openHistory = id;
+        history = null;
+        history = await Db.GetUserSanctionsAsync(id);
+    }
+
+    private static string SanctionLabel(string t) => t switch
+    {
+        "warning" => "경고",
+        "suspension" => "정지",
+        "ban" => "영구정지",
+        "unban" => "해제",
+        _ => t,
+    };
+}

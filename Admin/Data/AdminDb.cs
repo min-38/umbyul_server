@@ -38,7 +38,7 @@ public sealed class AdminDb(IConfiguration config)
         await using var cmd = new NpgsqlCommand(
             """
             select rep.id, ru.username, rep.target_type, rep.target_id, rep.reason, rep.detail, rep.status, rep.created_at,
-                   rat.id, rat.target_name, rat.target_artist, rat.review, rau.username, tu.username, rat.deleted_at
+                   rat.id, rat.target_name, rat.target_artist, rat.review, rau.username, tu.username, rat.deleted_at, rat.user_id
             from public.reports rep
             join public.users ru on ru.id = rep.reporter_id
             left join public.ratings rat on rep.target_type = 'rating' and rat.id = rep.target_id::uuid
@@ -57,6 +57,8 @@ public sealed class AdminDb(IConfiguration config)
             var targetType = r.GetString(2);
             string? title, sub, body;
             var targetDeleted = false;
+            Guid? offenderId = null; // 제재 대상(리뷰 작성자 또는 신고된 유저)
+            string? offenderName = null;
             if (targetType == "rating")
             {
                 var ratingExists = !r.IsDBNull(8); // rat.id — 존재 여부를 이름 유무와 구분
@@ -74,18 +76,22 @@ public sealed class AdminDb(IConfiguration config)
                     sub = string.Join(" · ", new[] { artist, author is null ? null : $"by {author}" }.Where(x => x is not null));
                     body = r.IsDBNull(11) ? null : r.GetString(11);
                     targetDeleted = !r.IsDBNull(14); // rat.deleted_at — 이미 소프트 삭제됨
+                    offenderId = r.IsDBNull(15) ? null : r.GetGuid(15);
+                    offenderName = author;
                 }
             }
             else // user
             {
-                title = r.IsDBNull(13) ? "(알 수 없는 유저)" : $"@{r.GetString(13)}";
+                offenderName = r.IsDBNull(13) ? null : r.GetString(13);
+                title = offenderName is null ? "(알 수 없는 유저)" : $"@{offenderName}";
+                offenderId = Guid.TryParse(r.GetString(3), out var ug) ? ug : null;
                 sub = null;
                 body = null;
             }
             list.Add(new ReportRow(
                 r.GetGuid(0), r.GetString(1), targetType, r.GetString(3), r.GetString(4),
                 r.IsDBNull(5) ? null : r.GetString(5), r.GetString(6), r.GetFieldValue<DateTimeOffset>(7),
-                title, sub, body, targetDeleted));
+                title, sub, body, targetDeleted, offenderId, offenderName));
         }
         return list;
     }
@@ -263,11 +269,116 @@ public sealed class AdminDb(IConfiguration config)
         }
         catch (NpgsqlException) { return (0, null); }
     }
+
+    // ── 유저 모더레이션(NON-47) ──
+    public async Task<List<UserRow>> ListUsersAsync(string? search, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            select u.id, u.username, u.avatar_url, u.created_at, u.suspended_until, u.banned,
+                   (select count(*) from public.reports r
+                      where (r.target_type = 'user' and r.target_id = u.id::text)
+                         or (r.target_type = 'rating' and r.target_id in
+                             (select ra.id::text from public.ratings ra where ra.user_id = u.id))) as reports
+            from public.users u
+            where @q = '' or u.username ilike '%' || @q || '%'
+            order by (u.banned or u.suspended_until > now()) desc, u.created_at desc
+            limit 100
+            """, conn);
+        cmd.Parameters.AddWithValue("q", search ?? "");
+        var list = new List<UserRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new UserRow(
+                r.GetGuid(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2),
+                r.GetFieldValue<DateTimeOffset>(3),
+                r.IsDBNull(4) ? null : r.GetFieldValue<DateTimeOffset>(4),
+                r.GetBoolean(5), (int)r.GetInt64(6)));
+        return list;
+    }
+
+    public async Task<List<SanctionRow>> GetUserSanctionsAsync(Guid userId, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select type, until, reason, admin_username, created_at from public.user_sanctions where user_id = @uid order by created_at desc limit 50", conn);
+        cmd.Parameters.AddWithValue("uid", userId);
+        var list = new List<SanctionRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new SanctionRow(r.GetString(0),
+                r.IsDBNull(1) ? null : r.GetFieldValue<DateTimeOffset>(1),
+                r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3),
+                r.GetFieldValue<DateTimeOffset>(4)));
+        return list;
+    }
+
+    public Task WarnUserAsync(Guid userId, string? reason, Actor actor, Guid? reportId = null, CancellationToken ct = default)
+        => ApplySanctionAsync(userId, "warning", null, reason, actor, reportId, ct);
+
+    public Task SuspendUserAsync(Guid userId, DateTimeOffset until, string? reason, Actor actor, Guid? reportId = null, CancellationToken ct = default)
+        => ApplySanctionAsync(userId, "suspension", until, reason, actor, reportId, ct);
+
+    public Task BanUserAsync(Guid userId, string? reason, Actor actor, Guid? reportId = null, CancellationToken ct = default)
+        => ApplySanctionAsync(userId, "ban", null, reason, actor, reportId, ct);
+
+    public Task UnbanUserAsync(Guid userId, Actor actor, Guid? reportId = null, CancellationToken ct = default)
+        => ApplySanctionAsync(userId, "unban", null, null, actor, reportId, ct);
+
+    // 제재 1건 = 이력(user_sanctions) 기록 + 집행 상태(users) 갱신 + 감사 로그(admin_actions).
+    private async Task ApplySanctionAsync(Guid userId, string type, DateTimeOffset? until, string? reason, Actor actor, Guid? reportId, CancellationToken ct)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        await using (var ins = new NpgsqlCommand(
+            """
+            insert into public.user_sanctions (user_id, type, until, reason, admin_id, admin_username, report_id)
+            values (@uid, @type, @until, @reason, @aid, @auser, @rid)
+            """, conn, tx))
+        {
+            ins.Parameters.AddWithValue("uid", userId);
+            ins.Parameters.AddWithValue("type", type);
+            ins.Parameters.AddWithValue("until", (object?)until ?? DBNull.Value);
+            ins.Parameters.AddWithValue("reason", (object?)reason ?? DBNull.Value);
+            ins.Parameters.AddWithValue("aid", (object?)actor.Id ?? DBNull.Value);
+            ins.Parameters.AddWithValue("auser", actor.Username);
+            ins.Parameters.AddWithValue("rid", (object?)reportId ?? DBNull.Value);
+            await ins.ExecuteNonQueryAsync(ct);
+        }
+
+        // 집행 상태 갱신(warning 은 상태 변화 없음).
+        var setSql = type switch
+        {
+            "suspension" => "update public.users set suspended_until = @until, banned = false where id = @uid",
+            "ban" => "update public.users set banned = true where id = @uid",
+            "unban" => "update public.users set banned = false, suspended_until = null where id = @uid",
+            _ => null,
+        };
+        if (setSql is not null)
+        {
+            await using var upd = new NpgsqlCommand(setSql, conn, tx);
+            upd.Parameters.AddWithValue("uid", userId);
+            if (type == "suspension") upd.Parameters.AddWithValue("until", (object?)until ?? DBNull.Value);
+            await upd.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+
+        var detail = until is { } u ? $"until {u:u}" : reason;
+        await LogAsync(conn, actor, $"user.{type}", userId.ToString(),
+            reportId is { } rp ? $"report {rp}; {detail}" : detail, ct);
+    }
 }
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,
-    string Status, DateTimeOffset CreatedAt, string? Title, string? Sub, string? Body, bool TargetDeleted);
+    string Status, DateTimeOffset CreatedAt, string? Title, string? Sub, string? Body, bool TargetDeleted,
+    Guid? OffenderId, string? OffenderName);
 
 public sealed record SpotifyStatusRow(DateTimeOffset? BlockedUntil, int? RetryAfterSeconds, DateTimeOffset? UpdatedAt);
 
@@ -275,3 +386,8 @@ public sealed record SpotifyStatusRow(DateTimeOffset? BlockedUntil, int? RetryAf
 public readonly record struct Actor(Guid? Id, string Username);
 public sealed record AdminRow(Guid Id, string Username, DateTimeOffset CreatedAt);
 public sealed record AdminActionRow(string AdminUsername, string Action, string? Target, string? Detail, DateTimeOffset CreatedAt);
+
+/// 유저 관리 목록 행: 현재 상태 + 신고 누적 수.
+public sealed record UserRow(Guid Id, string Username, string? AvatarUrl, DateTimeOffset CreatedAt,
+    DateTimeOffset? SuspendedUntil, bool Banned, int ReportCount);
+public sealed record SanctionRow(string Type, DateTimeOffset? Until, string? Reason, string AdminUsername, DateTimeOffset CreatedAt);
