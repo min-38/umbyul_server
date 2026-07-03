@@ -12,10 +12,12 @@ public static class FeedEndpoints
 {
     public static void MapFeedEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/feed", async (string? sort, string? scope, ClaimsPrincipal user, CancellationToken ct) =>
+        app.MapGet("/feed", async (string? sort, string? scope, int? offset, int? limit, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             var me = Me(user);
+            var off = Math.Max(offset ?? 0, 0);
+            var lim = Math.Clamp(limit ?? 50, 1, 100);
 
             // 팔로잉인데 비로그인 → 빈 피드.
             if (scope == "following" && me is null) return ApiResults.Ok("OK", new FeedData([]));
@@ -23,6 +25,7 @@ public static class FeedEndpoints
                 ? "and r.user_id in (select following_id from public.follows where follower_id = @me)"
                 : "";
 
+            // 계산 정렬의 페이지 간 안정성 위해 tie-breaker(id) 포함.
             var orderBy = sort switch
             {
                 "newest" => "created_at desc",
@@ -30,7 +33,7 @@ public static class FeedEndpoints
                 "ratio" => "wilson desc, likes desc",
                 "rising" => "recent desc, created_at desc",
                 _ => "hot desc", // 화제(기본)
-            };
+            } + ", id";
 
             try
             {
@@ -70,8 +73,10 @@ public static class FeedEndpoints
                            end) wilson
                     from f
                     order by {orderBy}
-                    limit 50
+                    limit @lim offset @off
                     """, conn);
+                cmd.Parameters.AddWithValue("lim", lim);
+                cmd.Parameters.AddWithValue("off", off);
                 // @me 는 scopeClause · my_reaction · dismissal 필터에서 항상 참조 → 비로그인은 NULL 로 바인딩.
                 cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
 

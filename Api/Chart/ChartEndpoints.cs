@@ -17,14 +17,17 @@ public static class ChartEndpoints
 
     public static void MapChartEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/chart", async (string? type, string? sort, string? period, string? gender, string? age, CancellationToken ct) =>
+        app.MapGet("/chart", async (string? type, string? sort, string? period, string? gender, string? age, int? offset, int? limit, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
 
+            var off = Math.Max(offset ?? 0, 0);
+            var lim = Math.Clamp(limit ?? 50, 1, 200); // 페이지 크기(더 보기로 증가)
             var isArtist = type == "artist"; // 앨범/곡 평가를 아티스트별로 집계
             var t = type is "album" or "track" ? type : null; // all => 타입 무관
             var typeClause = t is null ? "" : "and r.target_type = @type";
-            var orderBy = sort == "most" ? "v desc, wr desc" : "wr desc, v desc"; // 기본 top
+            // 계산 정렬의 페이지 간 안정성 위해 tie-breaker(target_spotify_id) 포함.
+            var orderBy = (sort == "most" ? "v desc, wr desc" : "wr desc, v desc") + ", b.target_spotify_id";
             var interval = period switch
             {
                 "day" => "and r.created_at > now() - interval '1 day'",
@@ -53,7 +56,7 @@ public static class ChartEndpoints
                 await conn.OpenAsync(ct);
 
                 if (isArtist)
-                    return await LoadArtistChartAsync(conn, artistFilters, orderBy, g, ct);
+                    return await LoadArtistChartAsync(conn, artistFilters, sort, g, off, lim, ct);
 
                 await using var cmd = new NpgsqlCommand(
                     $"""
@@ -76,10 +79,12 @@ public static class ChartEndpoints
                     from base b cross join gc
                     where b.v >= @minv
                     order by {orderBy}
-                    limit 100
+                    limit @lim offset @off
                     """, conn);
                 cmd.Parameters.AddWithValue("m", M);
                 cmd.Parameters.AddWithValue("minv", MinV);
+                cmd.Parameters.AddWithValue("lim", lim);
+                cmd.Parameters.AddWithValue("off", off);
                 if (t is not null) cmd.Parameters.AddWithValue("type", t);
                 if (g is not null) cmd.Parameters.AddWithValue("gender", g);
 
@@ -103,9 +108,12 @@ public static class ChartEndpoints
     // 기간은 각 축의 이벤트 시각(ratings/review_reactions/follows.created_at) 기준.
     private static void MapUserChart(WebApplication app, string? dbConnString)
     {
-        app.MapGet("/chart/users", async (string? sort, string? period, CancellationToken ct) =>
+        app.MapGet("/chart/users", async (string? sort, string? period, int? offset, int? limit, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+
+            var off = Math.Max(offset ?? 0, 0);
+            var lim = Math.Clamp(limit ?? 50, 1, 200);
 
             string Interval(string col) => period switch
             {
@@ -124,8 +132,8 @@ public static class ChartEndpoints
                     join public.users u on u.id = r.user_id
                     where x.value = 'like' {Interval("x.created_at")}
                     group by u.id, u.username, u.avatar_url
-                    order by n desc
-                    limit 100
+                    order by n desc, u.id
+                    limit @lim offset @off
                     """,
                 "followers" => $"""
                     select u.id, u.username, u.avatar_url, count(*) n
@@ -133,8 +141,8 @@ public static class ChartEndpoints
                     join public.users u on u.id = f.following_id
                     where true {Interval("f.created_at")}
                     group by u.id, u.username, u.avatar_url
-                    order by n desc
-                    limit 100
+                    order by n desc, u.id
+                    limit @lim offset @off
                     """,
                 _ => $"""
                     select u.id, u.username, u.avatar_url, count(*) n
@@ -142,8 +150,8 @@ public static class ChartEndpoints
                     join public.users u on u.id = r.user_id
                     where r.review is not null and r.review <> '' and r.deleted_at is null {Interval("r.created_at")}
                     group by u.id, u.username, u.avatar_url
-                    order by n desc
-                    limit 100
+                    order by n desc, u.id
+                    limit @lim offset @off
                     """,
             };
 
@@ -152,6 +160,8 @@ public static class ChartEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync(ct);
                 await using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("lim", lim);
+                cmd.Parameters.AddWithValue("off", off);
 
                 var list = new List<UserRankItem>();
                 await using var rd = await cmd.ExecuteReaderAsync(ct);
@@ -171,8 +181,9 @@ public static class ChartEndpoints
 
     // 아티스트 차트(NON-87): 앨범/곡 평가를 target_artists 로 펼쳐 아티스트별 집계. 커버 없음.
     private static async Task<IResult> LoadArtistChartAsync(
-        NpgsqlConnection conn, string filters, string orderBy, string? gender, CancellationToken ct)
+        NpgsqlConnection conn, string filters, string? sort, string? gender, int off, int lim, CancellationToken ct)
     {
+        var orderBy = (sort == "most" ? "v desc, wr desc" : "wr desc, v desc") + ", b.aid";
         await using var cmd = new NpgsqlCommand(
             $"""
             with base as (
@@ -195,10 +206,12 @@ public static class ChartEndpoints
             from base b cross join gc
             where b.aid is not null and b.v >= @minv
             order by {orderBy}
-            limit 100
+            limit @lim offset @off
             """, conn);
         cmd.Parameters.AddWithValue("m", M);
         cmd.Parameters.AddWithValue("minv", MinV);
+        cmd.Parameters.AddWithValue("lim", lim);
+        cmd.Parameters.AddWithValue("off", off);
         if (gender is not null) cmd.Parameters.AddWithValue("gender", gender);
 
         var list = new List<ArtistRankItem>();
