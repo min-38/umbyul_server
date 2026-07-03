@@ -88,6 +88,74 @@ public static class ChartEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+
+        MapUserChart(app, dbConnString);
+    }
+
+    // 유저 차트(NON-86): 리뷰어 랭킹. sort= reviews(최다 리뷰) | likes(좋아요 받은) | followers(최다 팔로워).
+    // 기간은 각 축의 이벤트 시각(ratings/review_reactions/follows.created_at) 기준.
+    private static void MapUserChart(WebApplication app, string? dbConnString)
+    {
+        app.MapGet("/chart/users", async (string? sort, string? period, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+
+            string Interval(string col) => period switch
+            {
+                "day" => $"and {col} > now() - interval '1 day'",
+                "week" => $"and {col} > now() - interval '7 days'",
+                "month" => $"and {col} > now() - interval '30 days'",
+                _ => $"and {col} > now() - interval '365 days'", // year(기본)
+            };
+
+            var sql = sort switch
+            {
+                "likes" => $"""
+                    select u.id, u.username, u.avatar_url, count(*) n
+                    from public.review_reactions x
+                    join public.ratings r on r.id = x.rating_id and r.deleted_at is null
+                    join public.users u on u.id = r.user_id
+                    where x.value = 'like' {Interval("x.created_at")}
+                    group by u.id, u.username, u.avatar_url
+                    order by n desc
+                    limit 100
+                    """,
+                "followers" => $"""
+                    select u.id, u.username, u.avatar_url, count(*) n
+                    from public.follows f
+                    join public.users u on u.id = f.following_id
+                    where true {Interval("f.created_at")}
+                    group by u.id, u.username, u.avatar_url
+                    order by n desc
+                    limit 100
+                    """,
+                _ => $"""
+                    select u.id, u.username, u.avatar_url, count(*) n
+                    from public.ratings r
+                    join public.users u on u.id = r.user_id
+                    where r.review is not null and r.review <> '' and r.deleted_at is null {Interval("r.created_at")}
+                    group by u.id, u.username, u.avatar_url
+                    order by n desc
+                    limit 100
+                    """,
+            };
+
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(sql, conn);
+
+                var list = new List<UserRankItem>();
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                    list.Add(new UserRankItem(
+                        rd.GetGuid(0).ToString(), rd.GetString(1),
+                        rd.IsDBNull(2) ? null : rd.GetString(2), (int)rd.GetInt64(3)));
+                return ApiResults.Ok("OK", new UserChartData(list));
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
     }
 
     // 평가자 나이대 EXISTS(생년월일 기준 완료 나이). cond 는 검증된 리터럴만.
@@ -105,3 +173,5 @@ public sealed record ChartItem(
     string TargetType, string SpotifyId, int Count, double Average,
     string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists);
 public sealed record ChartData(IReadOnlyList<ChartItem> Items);
+public sealed record UserRankItem(string UserId, string Username, string? AvatarUrl, int Count);
+public sealed record UserChartData(IReadOnlyList<UserRankItem> Items);
