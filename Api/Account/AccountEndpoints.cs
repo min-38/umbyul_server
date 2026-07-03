@@ -124,6 +124,65 @@ public static class AccountEndpoints
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 
+        // 내 데이터 내보내기(NON-111) — 규정 대응. 내 프로필·평가·팔로우·댓글을 JSON 으로.
+        me.MapGet("/export", async (ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync(ct);
+
+                ExportProfile? profile = null;
+                await using (var cmd = new NpgsqlCommand(
+                    "select username, country, created_at from public.users where id = @id", conn))
+                {
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    if (await r.ReadAsync(ct))
+                        profile = new ExportProfile(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2));
+                }
+
+                var ratings = new List<ExportRating>();
+                await using (var cmd = new NpgsqlCommand(
+                    """
+                    select target_type, target_spotify_id, target_name, target_artist, score, review, created_at
+                    from public.ratings where user_id = @id and deleted_at is null order by created_at
+                    """, conn))
+                {
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        ratings.Add(new ExportRating(
+                            r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1),
+                            r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3),
+                            r.GetDecimal(4), r.IsDBNull(5) ? null : r.GetString(5), r.GetFieldValue<DateTimeOffset>(6)));
+                }
+
+                var following = await UsernamesAsync(conn,
+                    "select u.username from public.follows f join public.users u on u.id = f.following_id where f.follower_id = @id order by u.username", uid, ct);
+                var followers = await UsernamesAsync(conn,
+                    "select u.username from public.follows f join public.users u on u.id = f.follower_id where f.following_id = @id order by u.username", uid, ct);
+
+                var comments = new List<ExportComment>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select body, created_at from public.review_comments where user_id = @id and deleted_at is null order by created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        comments.Add(new ExportComment(r.GetString(0), r.GetFieldValue<DateTimeOffset>(1)));
+                }
+                catch (NpgsqlException) { } // 댓글 테이블 미존재/컬럼 상이 — 생략
+
+                return ApiResults.Ok("OK", new ExportData(
+                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments));
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
         // 아바타 서빙 (공개) — R2 프록시
         app.MapGet("/media/avatar/{**key}", async (string key, R2Storage storage, CancellationToken ct) =>
         {
@@ -136,4 +195,25 @@ public static class AccountEndpoints
 
     private static Guid? Sub(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
+
+    private static async Task<List<string>> UsernamesAsync(NpgsqlConnection conn, string sql, Guid uid, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("id", uid);
+        var list = new List<string>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) list.Add(r.GetString(0));
+        return list;
+    }
 }
+
+// 데이터 내보내기(NON-111) 스키마.
+public sealed record ExportData(
+    DateTimeOffset ExportedAt, ExportProfile? Profile,
+    IReadOnlyList<ExportRating> Ratings, IReadOnlyList<string> Following,
+    IReadOnlyList<string> Followers, IReadOnlyList<ExportComment> Comments);
+public sealed record ExportProfile(string Username, string? Country, DateTimeOffset JoinedAt);
+public sealed record ExportRating(
+    string TargetType, string? SpotifyId, string? Name, string? Artist,
+    decimal Score, string? Review, DateTimeOffset CreatedAt);
+public sealed record ExportComment(string Body, DateTimeOffset CreatedAt);
