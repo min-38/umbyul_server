@@ -1,0 +1,121 @@
+@page "/reviews"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@using Admin.Data
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>리뷰 모더레이션</PageTitle>
+
+<div class="page-header">
+    <h1>리뷰</h1>
+    <p class="subtitle">신고 없이도 부적절한 리뷰를 검색해 삭제하고, 작성자를 제재합니다.</p>
+</div>
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="mb-3 d-flex gap-2" style="max-width:480px">
+        <input class="form-control form-control-sm" placeholder="유저명·리뷰 내용 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+        <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load">검색</button>
+    </div>
+
+    @if (reviews is null)
+    {
+        <p class="text-muted">불러오는 중…</p>
+    }
+    else if (reviews.Count == 0)
+    {
+        <div class="card"><div class="card-body text-center text-muted py-5">리뷰가 없습니다.</div></div>
+    }
+    else
+    {
+        @foreach (var r in reviews)
+        {
+            <div class="card mb-2">
+                <div class="card-body py-2">
+                    <div class="d-flex align-items-center gap-2 mb-1 small">
+                        <span class="badge @(r.TargetType == "track" ? "bg-primary" : "bg-success")">@(r.TargetType == "track" ? "곡" : "앨범")</span>
+                        <span class="fw-semibold">@(r.Name ?? "(제목 미상)")</span>
+                        @if (r.Artist is not null) { <span class="text-muted">· @r.Artist</span> }
+                        <span class="ms-auto fw-semibold">★ @r.Score.ToString("0.0")</span>
+                    </div>
+                    <p class="mb-1" style="white-space:pre-wrap">@r.Review</p>
+                    <div class="d-flex align-items-center gap-2 small text-muted">
+                        <span class="fw-semibold text-body">@r.Username</span>
+                        <span>· @r.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                        <span class="ms-auto"></span>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => ToggleDelete(r.Id)">삭제</button>
+                        <button class="btn btn-sm btn-outline-dark" @onclick="() => ToggleSanction(r.Id)">작성자 제재</button>
+                    </div>
+
+                    @if (deletingId == r.Id)
+                    {
+                        <div class="mt-2 d-flex gap-2 align-items-center">
+                            <input class="form-control form-control-sm" placeholder="삭제 사유(선택)" @bind="deleteReason" style="max-width:320px" />
+                            <button class="btn btn-sm btn-danger" @onclick="() => Delete(r.Id)">삭제 확정</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => deletingId = null">취소</button>
+                        </div>
+                    }
+                    @if (sanctionId == r.Id)
+                    {
+                        <div class="mt-2 bg-body-tertiary rounded p-2">
+                            <SanctionControls UserId="r.UserId" OnDone="Load" />
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    }
+}
+
+@code {
+    private List<ReviewRow>? reviews;
+    private string search = "";
+    private Guid? deletingId;
+    private Guid? sanctionId;
+    private string deleteReason = "";
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        reviews = null;
+        reviews = await Db.ListReviewsAsync(search);
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Load();
+    }
+
+    private void ToggleDelete(Guid id)
+    {
+        deletingId = deletingId == id ? null : id;
+        deleteReason = "";
+        sanctionId = null;
+    }
+
+    private void ToggleSanction(Guid id)
+    {
+        sanctionId = sanctionId == id ? null : id;
+        deletingId = null;
+    }
+
+    private async Task Delete(Guid id)
+    {
+        await Db.SoftDeleteRatingAsync(id, string.IsNullOrWhiteSpace(deleteReason) ? null : deleteReason.Trim(), await CurrentActor());
+        deletingId = null;
+        await Load();
+    }
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? id = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(id, user.Identity?.Name ?? "?");
+    }
+}

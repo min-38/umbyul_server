@@ -135,6 +135,54 @@ public sealed class AdminDb(IConfiguration config)
         await LogAsync(conn, actor, "rating.delete", ratingId, $"report {reportId}", ct);
     }
 
+    // ── 리뷰 모더레이션(신고 없이 직접) NON-98 ──
+
+    /// 리뷰(review 있는 평가) 목록. search 는 유저명·리뷰 본문 부분일치. 삭제된 것은 제외.
+    public async Task<List<ReviewRow>> ListReviewsAsync(string? search, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            select r.id, u.id, u.username, r.target_type, r.target_name, r.target_artist, r.target_spotify_id,
+                   r.score, r.review, r.created_at
+            from public.ratings r
+            join public.users u on u.id = r.user_id
+            where r.review is not null and length(trim(r.review)) > 0 and r.deleted_at is null
+              and (@q = '' or u.username ilike '%' || @q || '%' or r.review ilike '%' || @q || '%')
+            order by r.created_at desc
+            limit 100
+            """, conn);
+        cmd.Parameters.AddWithValue("q", search ?? "");
+        var list = new List<ReviewRow>();
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        while (await rd.ReadAsync(ct))
+            list.Add(new ReviewRow(
+                rd.GetGuid(0), rd.GetGuid(1), rd.GetString(2), rd.GetString(3),
+                rd.IsDBNull(4) ? null : rd.GetString(4), rd.IsDBNull(5) ? null : rd.GetString(5),
+                rd.IsDBNull(6) ? null : rd.GetString(6), rd.GetDecimal(7), rd.GetString(8),
+                rd.GetFieldValue<DateTimeOffset>(9)));
+        return list;
+    }
+
+    /// 신고 없이 리뷰를 소프트삭제(사유 기록). 감사 로그 남김.
+    public async Task SoftDeleteRatingAsync(Guid ratingId, string? reason, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using var del = new NpgsqlCommand(
+            """
+            update public.ratings
+            set deleted_at = now(), deleted_by = @by, deleted_reason = @reason
+            where id = @rid and deleted_at is null
+            """, conn);
+        del.Parameters.AddWithValue("rid", ratingId);
+        del.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+        del.Parameters.AddWithValue("reason", (object?)reason ?? DBNull.Value);
+        await del.ExecuteNonQueryAsync(ct);
+        await LogAsync(conn, actor, "rating.delete", ratingId.ToString(), "moderation", ct);
+    }
+
     // ── 관리자 계정 ──
     public async Task<(Guid Id, string Username, string Hash)?> GetAdminAuthAsync(string username, CancellationToken ct = default)
     {
@@ -631,3 +679,8 @@ public sealed record AdminActionRow(string AdminUsername, string Action, string?
 public sealed record UserRow(Guid Id, string Username, string? AvatarUrl, DateTimeOffset CreatedAt,
     DateTimeOffset? SuspendedUntil, bool Banned, int ReportCount);
 public sealed record SanctionRow(string Type, DateTimeOffset? Until, string? Reason, string AdminUsername, DateTimeOffset CreatedAt);
+
+/// 리뷰 모더레이션 목록 행(NON-98).
+public sealed record ReviewRow(
+    Guid Id, Guid UserId, string Username, string TargetType, string? Name, string? Artist, string? SpotifyId,
+    decimal Score, string Review, DateTimeOffset CreatedAt);
