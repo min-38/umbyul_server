@@ -25,6 +25,7 @@ public static class FollowEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, meId, default) is { } block) return Moderation.ToResult(block);
                 if (await ResolveUserIdAsync(conn, req.Username!) is not { } targetId)
                     return ApiResults.NotFound("USER_NOT_FOUND");
                 if (targetId == meId) return ApiResults.BadRequest("CANNOT_FOLLOW_SELF");
