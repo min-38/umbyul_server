@@ -287,7 +287,8 @@ public sealed class AdminDb(IConfiguration config)
             """, conn);
         cmd.Parameters.AddWithValue("action", action ?? "");
         cmd.Parameters.AddWithValue("admin", admin ?? "");
-        cmd.Parameters.AddWithValue("since", (object?)since ?? DBNull.Value);
+        // nullable 시각은 명시적 타입으로(무타입 DBNull은 Postgres 파라미터 타입 추론 실패 위험).
+        cmd.Parameters.Add(new NpgsqlParameter("since", NpgsqlTypes.NpgsqlDbType.TimestampTz) { Value = (object?)since ?? DBNull.Value });
         cmd.Parameters.AddWithValue("lim", limit);
         cmd.Parameters.AddWithValue("off", offset);
         var list = new List<AdminActionRow>();
