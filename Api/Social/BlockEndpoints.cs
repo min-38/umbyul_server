@@ -9,10 +9,40 @@ namespace Api.Social;
 public static class BlockEndpoints
 {
     public sealed record BlockRequest(string? Username);
+    public sealed record BlockedUser(string Username, string? AvatarUrl, DateTimeOffset CreatedAt);
 
     public static void MapBlockEndpoints(this WebApplication app, string? dbConnString)
     {
         var me = app.MapGroup("/me").RequireAuthorization();
+
+        // 내가 차단한 유저 목록(설정 · 차단 관리) — 최신순.
+        me.MapGet("/blocks", async (ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Me(user) is not { } meId) return ApiResults.Unauthorized("UNAUTHORIZED");
+
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(
+                    """
+                    select u.username, u.avatar_url, b.created_at
+                    from public.blocks b
+                    join public.users u on u.id = b.blocked_id
+                    where b.blocker_id = @me
+                    order by b.created_at desc
+                    """, conn);
+                cmd.Parameters.AddWithValue("me", meId);
+
+                var list = new List<BlockedUser>();
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct))
+                    list.Add(new BlockedUser(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+                return ApiResults.Ok("OK", list);
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
 
         // 차단 — 서로의 팔로우를 함께 삭제(멱등).
         me.MapPost("/blocks", async (BlockRequest req, ClaimsPrincipal user) =>
