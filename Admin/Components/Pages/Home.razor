@@ -1,52 +1,132 @@
 @page "/"
 @attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@inject AdminDb Db
 
 <PageTitle>Glitter Admin</PageTitle>
 
 <div class="page-header">
     <h1><span class="glitter-brand">Glitter</span> Admin</h1>
-    <p class="subtitle">관리자 콘솔 · 왼쪽 메뉴에서 작업을 선택하세요.</p>
+    <p class="subtitle">관리자 콘솔 · 운영 현황 요약입니다.</p>
 </div>
 
-<div class="row g-3" style="max-width:720px">
-    <div class="col-sm-6">
-        <a href="reports" class="text-decoration-none">
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else if (stats is null)
+{
+    <p class="text-muted">불러오는 중…</p>
+}
+else
+{
+    <div class="row g-3 mb-4" style="max-width:900px">
+        <div class="col-6 col-lg-3">
+            <a href="reports" class="text-decoration-none">
+                <div class="card h-100 @(stats.PendingReports > 0 ? "border-warning" : "")">
+                    <div class="card-body py-3">
+                        <div class="text-muted small">신고 대기</div>
+                        <div class="fs-3 fw-bold @(stats.PendingReports > 0 ? "text-warning" : "")">@stats.PendingReports</div>
+                    </div>
+                </div>
+            </a>
+        </div>
+        <div class="col-6 col-lg-3">
+            <a href="inquiries" class="text-decoration-none">
+                <div class="card h-100 @(stats.OpenInquiries > 0 ? "border-warning" : "")">
+                    <div class="card-body py-3">
+                        <div class="text-muted small">미처리 문의</div>
+                        <div class="fs-3 fw-bold @(stats.OpenInquiries > 0 ? "text-warning" : "")">@stats.OpenInquiries</div>
+                    </div>
+                </div>
+            </a>
+        </div>
+        <div class="col-6 col-lg-3">
+            <a href="users" class="text-decoration-none">
+                <div class="card h-100">
+                    <div class="card-body py-3">
+                        <div class="text-muted small">정지 중 유저</div>
+                        <div class="fs-3 fw-bold">@stats.SuspendedUsers</div>
+                    </div>
+                </div>
+            </a>
+        </div>
+        <div class="col-6 col-lg-3">
+            <a href="spotify" class="text-decoration-none">
+                <div class="card h-100">
+                    <div class="card-body py-3">
+                        <div class="text-muted small">Spotify 상태</div>
+                        <div class="fs-6 fw-semibold mt-2">확인 →</div>
+                    </div>
+                </div>
+            </a>
+        </div>
+        <div class="col-6 col-lg-3">
             <div class="card h-100">
-                <div class="card-body">
-                    <h5 class="card-title mb-1">신고 처리</h5>
-                    <p class="card-text text-muted small mb-0">접수된 신고를 검토하고 리뷰를 조치합니다.</p>
+                <div class="card-body py-3">
+                    <div class="text-muted small">가입 (오늘 / 총)</div>
+                    <div class="fs-4 fw-bold">@stats.UsersToday <span class="fs-6 text-muted">/ @stats.UsersTotal</span></div>
                 </div>
             </div>
-        </a>
-    </div>
-    <div class="col-sm-6">
-        <a href="users" class="text-decoration-none">
+        </div>
+        <div class="col-6 col-lg-3">
             <div class="card h-100">
-                <div class="card-body">
-                    <h5 class="card-title mb-1">유저 관리</h5>
-                    <p class="card-text text-muted small mb-0">유저에게 경고·정지·영구정지를 부여합니다.</p>
+                <div class="card-body py-3">
+                    <div class="text-muted small">리뷰 (오늘 / 총)</div>
+                    <div class="fs-4 fw-bold">@stats.ReviewsToday <span class="fs-6 text-muted">/ @stats.ReviewsTotal</span></div>
                 </div>
             </div>
-        </a>
+        </div>
     </div>
-    <div class="col-sm-6">
-        <a href="spotify" class="text-decoration-none">
-            <div class="card h-100">
-                <div class="card-body">
-                    <h5 class="card-title mb-1">Spotify 상태</h5>
-                    <p class="card-text text-muted small mb-0">레이트리밋(429) 및 응답 캐시 상태를 확인합니다.</p>
-                </div>
-            </div>
-        </a>
+
+    <div class="card mb-4" style="max-width:900px">
+        <div class="card-body">
+            <h6 class="text-muted mb-3">최근 7일 추이</h6>
+            <table class="table table-sm align-middle mb-0">
+                <thead><tr><th style="width:6rem">날짜</th><th>가입</th><th>리뷰</th></tr></thead>
+                <tbody>
+                    @foreach (var d in stats.Trend)
+                    {
+                        <tr>
+                            <td class="small text-muted">@d.Date.ToString("MM-dd")</td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="bg-primary rounded" style="height:10px; min-width:2px; width:@(Bar(d.Users))%"></div>
+                                    <span class="small">@d.Users</span>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="bg-success rounded" style="height:10px; min-width:2px; width:@(Bar(d.Reviews))%"></div>
+                                    <span class="small">@d.Reviews</span>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     </div>
-    <div class="col-sm-6">
-        <a href="admins" class="text-decoration-none">
-            <div class="card h-100">
-                <div class="card-body">
-                    <h5 class="card-title mb-1">관리자</h5>
-                    <p class="card-text text-muted small mb-0">관리자 계정과 감사 로그를 관리합니다.</p>
-                </div>
-            </div>
-        </a>
-    </div>
-</div>
+}
+
+@code {
+    private DashboardStats? stats;
+
+    protected override async Task OnInitializedAsync() =>
+        await LoadAsync(async () => stats = await Db.GetDashboardAsync());
+
+    // 막대 폭(%): 추이 내 최대값(가입·리뷰 통합) 기준 스케일. 0이면 0%.
+    private int Bar(int value)
+    {
+        if (stats is null || stats.Trend.Count == 0) return 0;
+        var max = stats.Trend.Max(d => Math.Max(d.Users, d.Reviews));
+        return max <= 0 ? 0 : (int)Math.Round(value * 100.0 / max);
+    }
+}

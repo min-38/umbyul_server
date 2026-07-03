@@ -656,6 +656,57 @@ public sealed class AdminDb(IConfiguration config)
         }
         await LogAsync(conn, actor, handled ? "inquiry.handled" : "inquiry.reopen", id.ToString(), null, ct);
     }
+
+    // ── 대시보드(NON-100) ── 운영 지표를 한 번의 왕복으로 집계.
+    public async Task<DashboardStats> GetDashboardAsync(CancellationToken ct = default)
+    {
+        if (!Configured) return new DashboardStats(0, 0, 0, 0, 0, 0, 0, []);
+        await using var conn = await OpenAsync(ct);
+
+        int pendingReports, openInquiries, usersToday, usersTotal, reviewsToday, reviewsTotal, suspended;
+        await using (var cmd = new NpgsqlCommand(
+            """
+            select
+              (select count(*) from public.reports where status = 'pending'),
+              (select count(*) from public.inquiries where handled = false),
+              (select count(*) from public.users where created_at >= date_trunc('day', now())),
+              (select count(*) from public.users),
+              (select count(*) from public.ratings where review is not null and length(trim(review)) > 0 and deleted_at is null and created_at >= date_trunc('day', now())),
+              (select count(*) from public.ratings where review is not null and length(trim(review)) > 0 and deleted_at is null),
+              (select count(*) from public.users where banned = true or suspended_until > now())
+            """, conn))
+        {
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            await r.ReadAsync(ct);
+            pendingReports = (int)r.GetInt64(0);
+            openInquiries = (int)r.GetInt64(1);
+            usersToday = (int)r.GetInt64(2);
+            usersTotal = (int)r.GetInt64(3);
+            reviewsToday = (int)r.GetInt64(4);
+            reviewsTotal = (int)r.GetInt64(5);
+            suspended = (int)r.GetInt64(6);
+        }
+
+        // 최근 7일(오늘 포함) 가입/리뷰 추이.
+        var trend = new List<DashboardDay>();
+        await using (var cmd = new NpgsqlCommand(
+            """
+            with days as (
+              select generate_series(date_trunc('day', now()) - interval '6 days', date_trunc('day', now()), interval '1 day') as d
+            )
+            select days.d::date,
+              (select count(*) from public.users u where u.created_at >= days.d and u.created_at < days.d + interval '1 day'),
+              (select count(*) from public.ratings ra where ra.review is not null and length(trim(ra.review)) > 0 and ra.deleted_at is null and ra.created_at >= days.d and ra.created_at < days.d + interval '1 day')
+            from days order by days.d
+            """, conn))
+        {
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                trend.Add(new DashboardDay(r.GetFieldValue<DateOnly>(0), (int)r.GetInt64(1), (int)r.GetInt64(2)));
+        }
+
+        return new DashboardStats(pendingReports, openInquiries, usersToday, usersTotal, reviewsToday, reviewsTotal, suspended, trend);
+    }
 }
 
 public sealed record FaqRow(Guid Id, string Category, string Question, string Answer, int SortOrder, bool Published, DateTimeOffset UpdatedAt);
@@ -684,3 +735,9 @@ public sealed record SanctionRow(string Type, DateTimeOffset? Until, string? Rea
 public sealed record ReviewRow(
     Guid Id, Guid UserId, string Username, string TargetType, string? Name, string? Artist, string? SpotifyId,
     decimal Score, string Review, DateTimeOffset CreatedAt);
+
+/// 대시보드 운영 지표(NON-100).
+public sealed record DashboardStats(
+    int PendingReports, int OpenInquiries, int UsersToday, int UsersTotal,
+    int ReviewsToday, int ReviewsTotal, int SuspendedUsers, IReadOnlyList<DashboardDay> Trend);
+public sealed record DashboardDay(DateOnly Date, int Users, int Reviews);
