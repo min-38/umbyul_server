@@ -223,7 +223,7 @@ else
     // 과거 게시 버전 내용을 편집기(초안)로 불러옴. 게시해야 공개 반영.
     private async Task LoadVersion(Guid id)
     {
-        var c = await Db.GetLegalVersionContentAsync(id);
+        var c = await Db.GetLegalVersionContentAsync(id, await CurrentActor());
         if (c is null) return;
         content = c;
         tab = "edit";

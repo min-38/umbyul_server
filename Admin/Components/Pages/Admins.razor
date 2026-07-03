@@ -29,11 +29,34 @@ else
         <div class="card-body">
             <h6 class="card-title text-muted mb-3">관리자 계정</h6>
             <table class="table table-sm align-middle mb-3">
-                <thead><tr><th>아이디</th><th>생성일</th></tr></thead>
+                <thead><tr><th>아이디</th><th>생성일</th><th>상태</th><th class="text-end">조치</th></tr></thead>
                 <tbody>
                     @foreach (var a in admins)
                     {
-                        <tr><td>@a.Username</td><td class="small text-muted">@a.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd")</td></tr>
+                        <tr>
+                            <td>
+                                @a.Username
+                                @if (a.Id == myId) { <span class="badge bg-body-tertiary text-muted border ms-1">나</span> }
+                            </td>
+                            <td class="small text-muted">@a.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                            <td>
+                                @if (a.IsActive) { <span class="badge bg-success">활성</span> }
+                                else { <span class="badge bg-secondary">비활성</span> }
+                            </td>
+                            <td class="text-end">
+                                @if (a.Id != myId)
+                                {
+                                    @if (a.IsActive)
+                                    {
+                                        <button class="btn btn-sm btn-outline-warning" @onclick="() => ToggleActive(a, false)" disabled="@Busy">비활성화</button>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn btn-sm btn-outline-success" @onclick="() => ToggleActive(a, true)" disabled="@Busy">활성화</button>
+                                    }
+                                }
+                            </td>
+                        </tr>
                     }
                 </tbody>
             </table>
@@ -49,6 +72,20 @@ else
             </div>
         </div>
     </div>
+
+    <div class="card" style="max-width:520px">
+        <div class="card-body">
+            <h6 class="card-title text-muted mb-3">내 비밀번호 변경</h6>
+            <div class="d-flex gap-2">
+                <input class="form-control form-control-sm" type="password" placeholder="새 비밀번호(8자+)" @bind="myNewPass" />
+                <button class="btn btn-sm btn-primary text-nowrap" @onclick="ChangePassword" disabled="@Busy">변경</button>
+            </div>
+            @if (pwMsg is not null)
+            {
+                <p class="@(pwOk ? "text-success" : "text-danger") small mt-2 mb-0">@pwMsg</p>
+            }
+        </div>
+    </div>
 }
 
 @code {
@@ -57,10 +94,41 @@ else
     private string newPass = "";
     private string? msg;
     private bool ok;
+    private Guid? myId;
+    private string myNewPass = "";
+    private string? pwMsg;
+    private bool pwOk;
 
-    protected override async Task OnInitializedAsync() => await Load();
+    protected override async Task OnInitializedAsync()
+    {
+        myId = (await CurrentActor()).Id;
+        await Load();
+    }
 
     private async Task Load() => await LoadAsync(async () => admins = await Db.ListAdminsAsync());
+
+    private Task ToggleActive(AdminRow a, bool active) => RunAsync(async () =>
+    {
+        var (okr, err) = await Db.SetAdminActiveAsync(a.Id, active, await CurrentActor());
+        if (!okr)
+        {
+            ok = false;
+            msg = err == "LAST_ADMIN" ? "마지막 활성 관리자는 비활성화할 수 없습니다." : "처리하지 못했습니다.";
+        }
+        else { msg = null; await Load(); }
+    });
+
+    private async Task ChangePassword()
+    {
+        pwMsg = null;
+        if (myNewPass.Length < 8) { pwOk = false; pwMsg = "비밀번호는 8자 이상."; return; }
+        if (myId is not { } id) { pwOk = false; pwMsg = "세션을 확인할 수 없습니다."; return; }
+        await RunAsync(async () =>
+        {
+            await Db.ChangeAdminPasswordAsync(id, BCrypt.Net.BCrypt.HashPassword(myNewPass), await CurrentActor());
+            pwOk = true; pwMsg = "변경되었습니다."; myNewPass = "";
+        });
+    }
 
     private async Task Add()
     {

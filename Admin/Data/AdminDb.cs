@@ -186,16 +186,16 @@ public sealed class AdminDb(IConfiguration config)
     }
 
     // ── 관리자 계정 ──
-    public async Task<(Guid Id, string Username, string Hash)?> GetAdminAuthAsync(string username, CancellationToken ct = default)
+    public async Task<(Guid Id, string Username, string Hash, bool IsActive)?> GetAdminAuthAsync(string username, CancellationToken ct = default)
     {
         if (!Configured) return null;
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select id, username, password_hash from public.admins where lower(username) = lower(@u)", conn);
+            "select id, username, password_hash, is_active from public.admins where lower(username) = lower(@u)", conn);
         cmd.Parameters.AddWithValue("u", username);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         if (!await r.ReadAsync(ct)) return null;
-        return (r.GetGuid(0), r.GetString(1), r.GetString(2));
+        return (r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetBoolean(3));
     }
 
     /// 부트스트랩: 해당 username이 없으면 생성(있으면 그대로 둠). 첫 관리자 시딩용.
@@ -222,11 +222,11 @@ public sealed class AdminDb(IConfiguration config)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("select id, username, created_at from public.admins order by created_at", conn);
+        await using var cmd = new NpgsqlCommand("select id, username, created_at, is_active from public.admins order by created_at", conn);
         var list = new List<AdminRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
-            list.Add(new AdminRow(r.GetGuid(0), r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+            list.Add(new AdminRow(r.GetGuid(0), r.GetString(1), r.GetFieldValue<DateTimeOffset>(2), r.GetBoolean(3)));
         return list;
     }
 
@@ -246,6 +246,43 @@ public sealed class AdminDb(IConfiguration config)
         catch (PostgresException e) when (e.SqlState == "23505") { return false; }
         await LogAsync(conn, actor, "admin.create", username, null, ct);
         return true;
+    }
+
+    /// 관리자 활성/비활성 토글(NON-103). 마지막 활성 관리자를 끄는 것은 거부(잠김 방지).
+    /// 반환: (성공, 실패 사유코드). 감사 로그 admin.deactivate / admin.activate.
+    public async Task<(bool Ok, string? Error)> SetAdminActiveAsync(Guid id, bool active, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return (false, "DB_NOT_CONFIGURED");
+        await using var conn = await OpenAsync(ct);
+
+        if (!active)
+        {
+            await using var cntCmd = new NpgsqlCommand("select count(*) from public.admins where is_active", conn);
+            if ((long)(await cntCmd.ExecuteScalarAsync(ct))! <= 1) return (false, "LAST_ADMIN");
+        }
+
+        await using (var cmd = new NpgsqlCommand("update public.admins set is_active = @a where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("a", active);
+            cmd.Parameters.AddWithValue("id", id);
+            if (await cmd.ExecuteNonQueryAsync(ct) == 0) return (false, "NOT_FOUND");
+        }
+        await LogAsync(conn, actor, active ? "admin.activate" : "admin.deactivate", id.ToString(), null, ct);
+        return (true, null);
+    }
+
+    /// 본인 비밀번호 변경(BCrypt 재해시는 호출부에서). 감사 로그 admin.password_change.
+    public async Task ChangeAdminPasswordAsync(Guid id, string newHash, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using (var cmd = new NpgsqlCommand("update public.admins set password_hash = @h where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("h", newHash);
+            cmd.Parameters.AddWithValue("id", id);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, "admin.password_change", id.ToString(), null, ct);
     }
 
     // ── 감사 로그 ──
@@ -562,13 +599,20 @@ public sealed class AdminDb(IConfiguration config)
     }
 
     // 특정 버전 원문(롤백·보기용).
-    public async Task<string?> GetLegalVersionContentAsync(Guid versionId, CancellationToken ct = default)
+    // 과거 버전 내용 불러오기(롤백 의도). 감사 로그 남김(NON-103) — 실제 공개 반영은 재게시(legal.publish).
+    public async Task<string?> GetLegalVersionContentAsync(Guid versionId, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return null;
         await using var conn = await OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand("select content from public.legal_versions where id = @id", conn);
-        cmd.Parameters.AddWithValue("id", versionId);
-        return await cmd.ExecuteScalarAsync(ct) as string;
+        string? content;
+        await using (var cmd = new NpgsqlCommand("select content from public.legal_versions where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("id", versionId);
+            content = await cmd.ExecuteScalarAsync(ct) as string;
+        }
+        if (content is not null)
+            await LogAsync(conn, actor, "legal.version_load", versionId.ToString(), null, ct);
+        return content;
     }
 
     // ── FAQ (NON-73) ──
@@ -763,7 +807,7 @@ public sealed record SpotifyStatusRow(DateTimeOffset? BlockedUntil, int? RetryAf
 
 /// 조치를 수행한 관리자(감사 로그용).
 public readonly record struct Actor(Guid? Id, string Username);
-public sealed record AdminRow(Guid Id, string Username, DateTimeOffset CreatedAt);
+public sealed record AdminRow(Guid Id, string Username, DateTimeOffset CreatedAt, bool IsActive);
 public sealed record AdminActionRow(string AdminUsername, string Action, string? Target, string? Detail, DateTimeOffset CreatedAt);
 
 /// 유저 관리 목록 행: 현재 상태 + 신고 누적 수.
