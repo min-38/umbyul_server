@@ -29,6 +29,7 @@ public static class FollowEndpoints
                 if (await ResolveUserIdAsync(conn, req.Username!) is not { } targetId)
                     return ApiResults.NotFound("USER_NOT_FOUND");
                 if (targetId == meId) return ApiResults.BadRequest("CANNOT_FOLLOW_SELF");
+                if (await BlockEndpoints.IsBlockedAsync(conn, meId, targetId)) return ApiResults.BadRequest("BLOCKED");
 
                 await using var cmd = new NpgsqlCommand(
                     "insert into public.follows (follower_id, following_id) values (@me, @t) on conflict do nothing", conn);

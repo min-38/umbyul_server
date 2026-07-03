@@ -56,6 +56,7 @@ public static class FeedEndpoints
                       left join rx on rx.rating_id = r.id
                       where r.review is not null and length(trim(r.review)) > 0 and r.target_spotify_id is not null and r.deleted_at is null {scopeClause}
                         and not exists (select 1 from public.feed_dismissals d where d.user_id = @me and d.rating_id = r.id)
+                        and not exists (select 1 from public.blocks b where (b.blocker_id = @me and b.blocked_id = r.user_id) or (b.blocker_id = r.user_id and b.blocked_id = @me))
                     )
                     select id, user_id, username, avatar_url, target_type, target_spotify_id,
                            score, review, created_at, target_name, target_artist, target_image_url, target_artists,

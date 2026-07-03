@@ -17,7 +17,7 @@ public sealed record UserProfile(
     string Id, string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
     int ReviewCount, int TotalLikes,
     int FollowerCount, int FollowingCount, bool IsFollowing,
-    IReadOnlyList<ProfileReview> Reviews);
+    IReadOnlyList<ProfileReview> Reviews, bool Blocked);
 
 public static class PublicProfileEndpoints
 {
@@ -53,6 +53,36 @@ public static class PublicProfileEndpoints
             // 삭제(모더레이션) 리뷰는 공개엔 숨기고, 작성자 본인이 볼 때만 묘비로 노출.
             var viewer = Me(user);
             var isOwner = viewer == uid;
+
+            // 차단 관계(상호) 확인 — NON-115. 상대가 나를 차단 → 숨김(404).
+            // 내가 상대를 차단 → 리뷰/통계 숨기고 "차단됨" 상태만(웹이 차단 해제 UI 노출).
+            if (viewer is { } vId && !isOwner)
+            {
+                bool iBlocked = false, blockedByThem = false;
+                try
+                {
+                    await using var bcmd = new NpgsqlCommand(
+                        """
+                        select coalesce(bool_or(blocker_id = @viewer), false),
+                               coalesce(bool_or(blocker_id = @uid), false)
+                        from public.blocks
+                        where (blocker_id = @viewer and blocked_id = @uid)
+                           or (blocker_id = @uid and blocked_id = @viewer)
+                        """, conn);
+                    bcmd.Parameters.AddWithValue("viewer", vId);
+                    bcmd.Parameters.AddWithValue("uid", uid);
+                    await using var br = await bcmd.ExecuteReaderAsync(ct);
+                    await br.ReadAsync(ct);
+                    iBlocked = br.GetBoolean(0);
+                    blockedByThem = br.GetBoolean(1);
+                }
+                catch (NpgsqlException) { } // blocks 미존재(마이그레이션 전) → 차단 없음으로 진행.
+
+                if (blockedByThem && !iBlocked) return ApiResults.NotFound("USER_NOT_FOUND");
+                if (iBlocked)
+                    return ApiResults.Ok("OK", new UserProfile(
+                        uid.ToString(), uname, avatar, joined, 0, 0, 0, 0, false, Array.Empty<ProfileReview>(), true));
+            }
 
             // 작성 리뷰 + 받은 좋아요 수. 마이그레이션(0006/0007) 미적용 등 실패 시 리뷰 없이 프로필만.
             var rows = new List<Row>();
@@ -97,7 +127,7 @@ public static class PublicProfileEndpoints
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(
-                uid.ToString(), uname, avatar, joined, active.Count, totalLikes, followers, following, isFollowing, reviews));
+                uid.ToString(), uname, avatar, joined, active.Count, totalLikes, followers, following, isFollowing, reviews, false));
         });
     }
 

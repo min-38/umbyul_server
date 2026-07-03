@@ -224,6 +224,9 @@ app.MapCommentEndpoints(dbConnString);
 // 팔로우 (/me/follows, /users/{username}/followers·following) — NON-25
 app.MapFollowEndpoints(dbConnString);
 
+// 유저 차단 (/me/blocks) — NON-115
+app.MapBlockEndpoints(dbConnString);
+
 // 알림 (/me/notifications) — NON-26
 app.MapNotificationEndpoints(dbConnString);
 
