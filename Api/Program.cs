@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Threading.RateLimiting;
 using Api.Account;
 using Api.Auth;
 using Api.Chart;
@@ -97,6 +98,35 @@ builder.Services.AddSingleton<ISpotifyResponseCache>(
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 
+// 레이트리밋(NON-96): 쓰기(POST/PUT/DELETE)만 유저(sub)/IP 기준 슬라이딩 윈도우로 제한.
+// 조회(GET/HEAD)·이미지 프록시는 무제한(브라우징·아바타 버스트 보호). 초과 시 429 {code:RATE_LIMITED}.
+builder.Services.AddRateLimiter(options =>
+{
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        var m = ctx.Request.Method;
+        if (HttpMethods.IsGet(m) || HttpMethods.IsHead(m) || HttpMethods.IsOptions(m))
+            return RateLimitPartition.GetNoLimiter("read");
+        var key = ctx.User.FindFirstValue("sub")
+                  ?? ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+                  ?? ctx.Connection.RemoteIpAddress?.ToString()
+                  ?? "anon";
+        return RateLimitPartition.GetSlidingWindowLimiter(key, _ => new SlidingWindowRateLimiterOptions
+        {
+            PermitLimit = 30,
+            Window = TimeSpan.FromSeconds(60),
+            SegmentsPerWindow = 6,
+            QueueLimit = 0,
+        });
+    });
+    options.OnRejected = async (ctx, ct) =>
+    {
+        ctx.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        ctx.HttpContext.Response.ContentType = "application/json";
+        await ctx.HttpContext.Response.WriteAsync("{\"code\":\"RATE_LIMITED\",\"data\":null}", ct);
+    };
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -111,6 +141,9 @@ app.UseCors("web");
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// 인증 이후에 둬 sub 클레임으로 파티션(로그인 유저는 유저별, 아니면 IP별). (NON-96)
+app.UseRateLimiter();
 
 // 보호 엔드포인트: 유효한 Supabase JWT면 user id(sub = auth.uid())와 email 반환, 무효면 401.
 app.MapGet("/me", (ClaimsPrincipal user) =>
