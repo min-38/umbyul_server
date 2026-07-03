@@ -1,3 +1,4 @@
+@inherits AdminPageBase
 @using Admin.Data
 @using Microsoft.AspNetCore.Components.Authorization
 @inject AdminDb Db
@@ -13,14 +14,18 @@
         <option value="day">일</option>
         <option value="month">월</option>
     </select>
-    <button class="btn btn-sm btn-outline-warning" @onclick="Suspend">정지</button>
-    <button class="btn btn-sm btn-outline-secondary" @onclick="Warn">경고</button>
-    <button class="btn btn-sm btn-outline-danger" @onclick="Ban">영구정지</button>
-    <button class="btn btn-sm btn-outline-success" @onclick="Unban">해제</button>
+    <button class="btn btn-sm btn-outline-warning" @onclick="Suspend" disabled="@Busy">정지</button>
+    <button class="btn btn-sm btn-outline-secondary" @onclick="Warn" disabled="@Busy">경고</button>
+    <button class="btn btn-sm btn-outline-danger" @onclick="Ban" disabled="@Busy">영구정지</button>
+    <button class="btn btn-sm btn-outline-success" @onclick="Unban" disabled="@Busy">해제</button>
 </div>
 @if (msg is not null)
 {
     <div class="small text-success mt-1">@msg</div>
+}
+@if (Error is not null)
+{
+    <div class="small text-danger mt-1">@Error</div>
 }
 
 @code {
@@ -33,12 +38,12 @@
     private string unit = "day";
     private string? msg;
 
-    private async Task Warn()
+    private Task Warn() => RunAsync(async () =>
     {
         using (Guard.Work())
             await Db.WarnUserAsync(UserId, R(), await CurrentActor(), ReportId);
         await Done("경고 부여됨");
-    }
+    });
 
     private async Task Suspend()
     {
@@ -49,24 +54,27 @@
             "month" => DateTimeOffset.UtcNow.AddMonths(amount),
             _ => DateTimeOffset.UtcNow.AddDays(amount),
         };
-        using (Guard.Work())
-            await Db.SuspendUserAsync(UserId, until, R(), await CurrentActor(), ReportId);
-        await Done($"정지: {until.ToLocalTime():yyyy-MM-dd HH:mm}까지");
+        await RunAsync(async () =>
+        {
+            using (Guard.Work())
+                await Db.SuspendUserAsync(UserId, until, R(), await CurrentActor(), ReportId);
+            await Done($"정지: {until.ToLocalTime():yyyy-MM-dd HH:mm}까지");
+        }, confirm: $"이 유저를 {until.ToLocalTime():yyyy-MM-dd HH:mm}까지 정지할까요?");
     }
 
-    private async Task Ban()
+    private Task Ban() => RunAsync(async () =>
     {
         using (Guard.Work())
             await Db.BanUserAsync(UserId, R(), await CurrentActor(), ReportId);
         await Done("영구정지됨");
-    }
+    }, confirm: "이 유저를 영구정지할까요? 해제 전까지 작성이 차단됩니다.");
 
-    private async Task Unban()
+    private Task Unban() => RunAsync(async () =>
     {
         using (Guard.Work())
             await Db.UnbanUserAsync(UserId, await CurrentActor(), ReportId);
         await Done("해제됨");
-    }
+    });
 
     private string? R() => string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
 

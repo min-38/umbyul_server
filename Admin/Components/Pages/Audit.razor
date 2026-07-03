@@ -1,6 +1,7 @@
 @page "/audit"
 @attribute [Authorize]
 @rendermode InteractiveServer
+@inherits AdminPageBase
 @using Admin.Data
 @inject AdminDb Db
 
@@ -11,13 +12,18 @@
     <p class="subtitle">관리자 조치 내역입니다.</p>
 </div>
 
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+
 @if (!Db.Configured)
 {
     <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
 }
 else
 {
-    <button class="btn btn-sm btn-outline-secondary mb-3" @onclick="Load">새로고침</button>
+    <button class="btn btn-sm btn-outline-secondary mb-3" @onclick="Load" disabled="@Busy">새로고침</button>
 
     @if (actions is null)
     {
@@ -57,6 +63,6 @@ else
     private async Task Load()
     {
         actions = null;
-        actions = await Db.RecentActionsAsync(100);
+        await LoadAsync(async () => actions = await Db.RecentActionsAsync(100));
     }
 }
