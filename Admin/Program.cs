@@ -57,7 +57,7 @@ app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db) =>
     var username = form["username"].ToString();
     var password = form["password"].ToString();
     var admin = await db.GetAdminAuthAsync(username);
-    if (admin is { } a && BCrypt.Net.BCrypt.Verify(password, a.Hash))
+    if (admin is { } a && a.IsActive && BCrypt.Net.BCrypt.Verify(password, a.Hash)) // 비활성 관리자는 로그인 차단(NON-103)
     {
         await SignInAdminAsync(ctx, a.Id, a.Username, SessionDuration);
         await db.LogAsync(new Actor(a.Id, a.Username), "login", null, null);
