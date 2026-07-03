@@ -3,6 +3,7 @@ namespace Api.Ratings;
 /// 평점 등록 입력 검증. 순수 함수라 단위 테스트 가능. DB CHECK(0.5단위)와 일치시킨다.
 public static class RatingValidation
 {
+    public const int MinReviewLength = 10;   // 리뷰 필수 · 최소 길이 (NON-91)
     public const int MaxReviewLength = 5000;
 
     public static bool IsScore(decimal score) =>
@@ -10,5 +11,10 @@ public static class RatingValidation
 
     public static bool IsTargetType(string? t) => t is "track" or "album";
 
-    public static bool IsReview(string? review) => review is null || review.Length <= MaxReviewLength;
+    // 리뷰 필수: 공백 제외 길이가 [Min, Max] 여야 함.
+    public static bool IsReview(string? review)
+    {
+        var len = review?.Trim().Length ?? 0;
+        return len >= MinReviewLength && len <= MaxReviewLength;
+    }
 }

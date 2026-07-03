@@ -28,7 +28,9 @@ public static class RatingEndpoints
             if (!RatingValidation.IsTargetType(req.TargetType)) return ApiResults.BadRequest("INVALID_TARGET_TYPE");
             if (string.IsNullOrWhiteSpace(req.TargetId)) return ApiResults.BadRequest("INVALID_TARGET");
             if (!RatingValidation.IsScore(req.Score)) return ApiResults.BadRequest("INVALID_SCORE");
-            if (!RatingValidation.IsReview(req.Review)) return ApiResults.BadRequest("REVIEW_TOO_LONG");
+            var reviewLen = req.Review?.Trim().Length ?? 0;
+            if (reviewLen < RatingValidation.MinReviewLength) return ApiResults.BadRequest("REVIEW_TOO_SHORT");
+            if (reviewLen > RatingValidation.MaxReviewLength) return ApiResults.BadRequest("REVIEW_TOO_LONG");
 
             var review = string.IsNullOrWhiteSpace(req.Review) ? null : req.Review!.Trim();
             try
