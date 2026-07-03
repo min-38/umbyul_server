@@ -49,15 +49,17 @@ public static class FeedEndpoints
                     f as (
                       select r.id, r.user_id, u.username, u.avatar_url, r.target_type, r.target_spotify_id,
                              r.score, r.review, r.created_at, r.target_name, r.target_artist, r.target_image_url, r.target_artists,
-                             coalesce(rx.likes, 0) likes, coalesce(rx.dislikes, 0) dislikes, coalesce(rx.recent, 0) recent
+                             coalesce(rx.likes, 0) likes, coalesce(rx.dislikes, 0) dislikes, coalesce(rx.recent, 0) recent,
+                             (select re.value from public.review_reactions re where re.rating_id = r.id and re.user_id = @me limit 1) my_reaction
                       from public.ratings r
                       join public.users u on u.id = r.user_id
                       left join rx on rx.rating_id = r.id
                       where r.review is not null and length(trim(r.review)) > 0 and r.target_spotify_id is not null and r.deleted_at is null {scopeClause}
+                        and not exists (select 1 from public.feed_dismissals d where d.user_id = @me and d.rating_id = r.id)
                     )
                     select id, user_id, username, avatar_url, target_type, target_spotify_id,
                            score, review, created_at, target_name, target_artist, target_image_url, target_artists,
-                           likes, dislikes,
+                           likes, dislikes, my_reaction,
                            (log(greatest(abs(likes - dislikes), 1))
                              + sign(likes - dislikes) * extract(epoch from created_at) / 45000.0) hot,
                            (case when likes + dislikes = 0 then 0 else
@@ -69,7 +71,8 @@ public static class FeedEndpoints
                     order by {orderBy}
                     limit 50
                     """, conn);
-                if (scope == "following" && me is { } uid) cmd.Parameters.AddWithValue("me", uid);
+                // @me 는 scopeClause · my_reaction · dismissal 필터에서 항상 참조 → 비로그인은 NULL 로 바인딩.
+                cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
 
                 var list = new List<FeedItem>();
                 await using var rd = await cmd.ExecuteReaderAsync(ct);
@@ -81,12 +84,43 @@ public static class FeedEndpoints
                         rd.IsDBNull(9) ? null : rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10),
                         rd.IsDBNull(11) ? null : rd.GetString(11),
                         rd.IsDBNull(12) ? null : ParseArtists(rd.GetString(12)),
-                        (int)rd.GetInt64(13), (int)rd.GetInt64(14)));
+                        (int)rd.GetInt64(13), (int)rd.GetInt64(14),
+                        rd.IsDBNull(15) ? null : rd.GetString(15)));
                 return ApiResults.Ok("OK", new FeedData(list));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+
+        // "관심 없음" — 이 리뷰를 내 피드에서 숨김(멱등). 인스타식, 취소 UI 없음.
+        app.MapGroup("/me").RequireAuthorization()
+           .MapPost("/feed/dismiss", async (DismissRequest req, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } sub || !Guid.TryParse(sub, out var uid))
+                return ApiResults.Unauthorized("UNAUTHORIZED");
+            if (!Guid.TryParse(req.RatingId, out var rid)) return ApiResults.BadRequest("INVALID_TARGET");
+
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(
+                    """
+                    insert into public.feed_dismissals (user_id, rating_id)
+                    values (@uid, @rid)
+                    on conflict (user_id, rating_id) do nothing
+                    """, conn);
+                cmd.Parameters.AddWithValue("uid", uid);
+                cmd.Parameters.AddWithValue("rid", rid);
+                await cmd.ExecuteNonQueryAsync(ct);
+                return ApiResults.Ok("OK", new { });
+            }
+            catch (PostgresException ex) when (ex.SqlState == "23503") { return ApiResults.BadRequest("INVALID_TARGET"); }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
     }
+
+    public sealed record DismissRequest(string? RatingId);
 
     private static IReadOnlyList<ArtistRef>? ParseArtists(string json)
     {
@@ -102,5 +136,5 @@ public sealed record FeedItem(
     string Id, string UserId, string Username, string? AvatarUrl,
     string TargetType, string TargetSpotifyId, decimal Score, string Body, DateTimeOffset CreatedAt,
     string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists,
-    int Likes, int Dislikes);
+    int Likes, int Dislikes, string? MyReaction);
 public sealed record FeedData(IReadOnlyList<FeedItem> Items);
