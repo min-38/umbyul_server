@@ -50,7 +50,8 @@ public static class RatingEndpoints
                                   target_name = excluded.target_name,
                                   target_artist = excluded.target_artist,
                                   target_image_url = excluded.target_image_url,
-                                  target_artists = excluded.target_artists
+                                  target_artists = excluded.target_artists,
+                                  deleted_at = null, deleted_by = null, deleted_reason = null
                     """, conn);
                 cmd.Parameters.AddWithValue("uid", Guid.Parse(id));
                 cmd.Parameters.AddWithValue("tt", req.TargetType!);
