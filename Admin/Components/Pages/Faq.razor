@@ -1,6 +1,7 @@
 @page "/faq"
 @attribute [Authorize]
 @rendermode InteractiveServer
+@inherits AdminPageBase
 @using Admin.Data
 @using Microsoft.AspNetCore.Components.Authorization
 @inject AdminDb Db
@@ -12,6 +13,11 @@
     <h1>FAQ</h1>
     <p class="subtitle">자주 묻는 질문을 로케일별로 작성·게시합니다. 정본은 en.</p>
 </div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
 
 @if (!Db.Configured)
 {
@@ -52,7 +58,7 @@ else
                                 }
                             </td>
                             <td class="text-end">
-                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(it.Id)" @onclick:stopPropagation>삭제</button>
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(it.Id)" @onclick:stopPropagation disabled="@Busy">삭제</button>
                             </td>
                         </tr>
                     }
@@ -95,7 +101,7 @@ else
                 }
 
                 <div class="d-flex align-items-center gap-2 mt-3">
-                    <button class="btn btn-sm btn-primary" @onclick="Save">저장</button>
+                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
                     @if (msg is not null)
                     {
                         <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
@@ -126,7 +132,7 @@ else
     {
         var loc = string.IsNullOrWhiteSpace(locale) ? "en" : locale.Trim();
         locale = loc;
-        items = await Db.ListFaqAsync(loc);
+        await LoadAsync(async () => items = await Db.ListFaqAsync(loc));
         editing = false;
     }
 
@@ -161,18 +167,21 @@ else
     private async Task Save()
     {
         if (string.IsNullOrWhiteSpace(question)) { err = true; msg = "질문을 입력하세요."; return; }
-        id = await Db.SaveFaqAsync(id, locale, category, question, answer, sortOrder, published, await CurrentActor());
-        err = false;
-        msg = "저장됨";
-        await LoadKeepEditor();
+        await RunAsync(async () =>
+        {
+            id = await Db.SaveFaqAsync(id, locale, category, question, answer, sortOrder, published, await CurrentActor());
+            err = false;
+            msg = "저장됨";
+            await LoadKeepEditor();
+        });
     }
 
-    private async Task Delete(Guid itemId)
+    private Task Delete(Guid itemId) => RunAsync(async () =>
     {
         await Db.DeleteFaqAsync(itemId, await CurrentActor());
         if (id == itemId) editing = false;
         items = await Db.ListFaqAsync(locale);
-    }
+    }, confirm: "이 FAQ 항목을 삭제할까요?");
 
     // 저장 후 목록만 갱신(편집기 유지).
     private async Task LoadKeepEditor() => items = await Db.ListFaqAsync(locale);

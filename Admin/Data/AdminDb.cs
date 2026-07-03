@@ -31,7 +31,7 @@ public sealed class AdminDb(IConfiguration config)
     }
 
     // ── 신고 ──
-    public async Task<List<ReportRow>> GetReportsAsync(string? status, CancellationToken ct = default)
+    public async Task<List<ReportRow>> GetReportsAsync(string? status, int offset = 0, int limit = 50, CancellationToken ct = default)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
@@ -46,9 +46,11 @@ public sealed class AdminDb(IConfiguration config)
             left join public.users tu on rep.target_type = 'user' and tu.id = rep.target_id::uuid
             where (@status = '' or rep.status = @status)
             order by rep.created_at desc
-            limit 200
+            limit @lim offset @off
             """, conn);
         cmd.Parameters.AddWithValue("status", status ?? "");
+        cmd.Parameters.AddWithValue("lim", limit);
+        cmd.Parameters.AddWithValue("off", offset);
 
         var list = new List<ReportRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
@@ -269,13 +271,26 @@ public sealed class AdminDb(IConfiguration config)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    public async Task<List<AdminActionRow>> RecentActionsAsync(int limit, CancellationToken ct = default)
+    public async Task<List<AdminActionRow>> RecentActionsAsync(
+        string? action = null, string? admin = null, DateTimeOffset? since = null,
+        int offset = 0, int limit = 50, CancellationToken ct = default)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select admin_username, action, target, detail, created_at from public.admin_actions order by created_at desc limit @n", conn);
-        cmd.Parameters.AddWithValue("n", limit);
+            """
+            select admin_username, action, target, detail, created_at from public.admin_actions
+            where (@action = '' or action ilike '%' || @action || '%')
+              and (@admin = '' or admin_username ilike '%' || @admin || '%')
+              and (@since is null or created_at >= @since)
+            order by created_at desc limit @lim offset @off
+            """, conn);
+        cmd.Parameters.AddWithValue("action", action ?? "");
+        cmd.Parameters.AddWithValue("admin", admin ?? "");
+        // nullable 시각은 명시적 타입으로(무타입 DBNull은 Postgres 파라미터 타입 추론 실패 위험).
+        cmd.Parameters.Add(new NpgsqlParameter("since", NpgsqlTypes.NpgsqlDbType.TimestampTz) { Value = (object?)since ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("lim", limit);
+        cmd.Parameters.AddWithValue("off", offset);
         var list = new List<AdminActionRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -319,10 +334,11 @@ public sealed class AdminDb(IConfiguration config)
     }
 
     // ── 유저 모더레이션(NON-47) ──
-    public async Task<List<UserRow>> ListUsersAsync(string? search, CancellationToken ct = default)
+    public async Task<List<UserRow>> ListUsersAsync(string? search, int offset = 0, int limit = 50, CancellationToken ct = default)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
+        // 검색은 username 또는 가입 이메일(auth.users) ILIKE. service_role 자격이라 auth 스키마 조회 가능.
         await using var cmd = new NpgsqlCommand(
             """
             select u.id, u.username, u.avatar_url, u.created_at, u.suspended_until, u.banned,
@@ -331,11 +347,15 @@ public sealed class AdminDb(IConfiguration config)
                          or (r.target_type = 'rating' and r.target_id in
                              (select ra.id::text from public.ratings ra where ra.user_id = u.id))) as reports
             from public.users u
-            where @q = '' or u.username ilike '%' || @q || '%'
+            where @q = ''
+               or u.username ilike '%' || @q || '%'
+               or exists (select 1 from auth.users au where au.id = u.id and au.email ilike '%' || @q || '%')
             order by (u.banned or u.suspended_until > now()) desc, u.created_at desc
-            limit 100
+            limit @lim offset @off
             """, conn);
         cmd.Parameters.AddWithValue("q", search ?? "");
+        cmd.Parameters.AddWithValue("lim", limit);
+        cmd.Parameters.AddWithValue("off", offset);
         var list = new List<UserRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -623,22 +643,42 @@ public sealed class AdminDb(IConfiguration config)
     }
 
     // ── 문의 (NON-76) ──
-    public async Task<List<InquiryRow>> ListInquiriesAsync(bool? handled, CancellationToken ct = default)
+    public async Task<List<InquiryRow>> ListInquiriesAsync(
+        bool? handled, string? search = null, string? category = null, int offset = 0, int limit = 50, CancellationToken ct = default)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
             """
             select id, category, email, title, content, handled, created_at from public.inquiries
-            where @all or handled = @h
-            order by created_at desc limit 300
+            where (@all or handled = @h)
+              and (@q = '' or title ilike '%' || @q || '%' or content ilike '%' || @q || '%' or email ilike '%' || @q || '%')
+              and (@cat = '' or category = @cat)
+            order by created_at desc limit @lim offset @off
             """, conn);
         cmd.Parameters.AddWithValue("all", handled is null);
         cmd.Parameters.AddWithValue("h", handled ?? false);
+        cmd.Parameters.AddWithValue("q", search ?? "");
+        cmd.Parameters.AddWithValue("cat", category ?? "");
+        cmd.Parameters.AddWithValue("lim", limit);
+        cmd.Parameters.AddWithValue("off", offset);
         var list = new List<InquiryRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
             list.Add(new InquiryRow(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.GetFieldValue<DateTimeOffset>(6)));
+        return list;
+    }
+
+    // 카테고리 필터용 — 실제 저장된 값(로케일별 라벨 혼재)을 그대로 노출.
+    public async Task<List<string>> InquiryCategoriesAsync(CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select distinct category from public.inquiries where category is not null and category <> '' order by 1", conn);
+        var list = new List<string>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) list.Add(r.GetString(0));
         return list;
     }
 
@@ -655,6 +695,57 @@ public sealed class AdminDb(IConfiguration config)
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await LogAsync(conn, actor, handled ? "inquiry.handled" : "inquiry.reopen", id.ToString(), null, ct);
+    }
+
+    // ── 대시보드(NON-100) ── 운영 지표를 한 번의 왕복으로 집계.
+    public async Task<DashboardStats> GetDashboardAsync(CancellationToken ct = default)
+    {
+        if (!Configured) return new DashboardStats(0, 0, 0, 0, 0, 0, 0, []);
+        await using var conn = await OpenAsync(ct);
+
+        int pendingReports, openInquiries, usersToday, usersTotal, reviewsToday, reviewsTotal, suspended;
+        await using (var cmd = new NpgsqlCommand(
+            """
+            select
+              (select count(*) from public.reports where status = 'pending'),
+              (select count(*) from public.inquiries where handled = false),
+              (select count(*) from public.users where created_at >= date_trunc('day', now())),
+              (select count(*) from public.users),
+              (select count(*) from public.ratings where review is not null and length(trim(review)) > 0 and deleted_at is null and created_at >= date_trunc('day', now())),
+              (select count(*) from public.ratings where review is not null and length(trim(review)) > 0 and deleted_at is null),
+              (select count(*) from public.users where banned = true or suspended_until > now())
+            """, conn))
+        {
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            await r.ReadAsync(ct);
+            pendingReports = (int)r.GetInt64(0);
+            openInquiries = (int)r.GetInt64(1);
+            usersToday = (int)r.GetInt64(2);
+            usersTotal = (int)r.GetInt64(3);
+            reviewsToday = (int)r.GetInt64(4);
+            reviewsTotal = (int)r.GetInt64(5);
+            suspended = (int)r.GetInt64(6);
+        }
+
+        // 최근 7일(오늘 포함) 가입/리뷰 추이.
+        var trend = new List<DashboardDay>();
+        await using (var cmd = new NpgsqlCommand(
+            """
+            with days as (
+              select generate_series(date_trunc('day', now()) - interval '6 days', date_trunc('day', now()), interval '1 day') as d
+            )
+            select days.d::date,
+              (select count(*) from public.users u where u.created_at >= days.d and u.created_at < days.d + interval '1 day'),
+              (select count(*) from public.ratings ra where ra.review is not null and length(trim(ra.review)) > 0 and ra.deleted_at is null and ra.created_at >= days.d and ra.created_at < days.d + interval '1 day')
+            from days order by days.d
+            """, conn))
+        {
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                trend.Add(new DashboardDay(r.GetFieldValue<DateOnly>(0), (int)r.GetInt64(1), (int)r.GetInt64(2)));
+        }
+
+        return new DashboardStats(pendingReports, openInquiries, usersToday, usersTotal, reviewsToday, reviewsTotal, suspended, trend);
     }
 }
 
@@ -684,3 +775,9 @@ public sealed record SanctionRow(string Type, DateTimeOffset? Until, string? Rea
 public sealed record ReviewRow(
     Guid Id, Guid UserId, string Username, string TargetType, string? Name, string? Artist, string? SpotifyId,
     decimal Score, string Review, DateTimeOffset CreatedAt);
+
+/// 대시보드 운영 지표(NON-100).
+public sealed record DashboardStats(
+    int PendingReports, int OpenInquiries, int UsersToday, int UsersTotal,
+    int ReviewsToday, int ReviewsTotal, int SuspendedUsers, IReadOnlyList<DashboardDay> Trend);
+public sealed record DashboardDay(DateOnly Date, int Users, int Reviews);
