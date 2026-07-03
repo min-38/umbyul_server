@@ -24,8 +24,8 @@
 else
 {
     <div class="mb-3 d-flex gap-2" style="max-width:420px">
-        <input class="form-control form-control-sm" placeholder="유저명 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
-        <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load">검색</button>
+        <input class="form-control form-control-sm" placeholder="유저명·이메일 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+        <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load" disabled="@Busy">검색</button>
     </div>
 
     @if (users is null)
@@ -102,26 +102,48 @@ else
             </tbody>
         </table>
         </div>
+
+        @if (hasMore)
+        {
+            <div class="text-center mt-3">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+            </div>
+        }
     }
 }
 
 @code {
+    private const int PageSize = 50;
     private List<UserRow>? users;
     private string search = "";
     private Guid? openHistory;
     private List<SanctionRow>? history;
+    private int offset;
+    private bool hasMore;
 
     protected override async Task OnInitializedAsync() => await Load();
 
     private async Task Load()
     {
         users = null;
+        offset = 0;
         await LoadAsync(async () =>
         {
-            users = await Db.ListUsersAsync(search);
+            var page = await Db.ListUsersAsync(search, 0, PageSize);
+            users = page;
+            offset = page.Count;
+            hasMore = page.Count == PageSize;
             if (openHistory is { } id) history = await Db.GetUserSanctionsAsync(id); // 열려있으면 갱신
         });
     }
+
+    private Task LoadMore() => RunAsync(async () =>
+    {
+        var page = await Db.ListUsersAsync(search, offset, PageSize);
+        users!.AddRange(page);
+        offset += page.Count;
+        hasMore = page.Count == PageSize;
+    });
 
     private async Task OnKey(KeyboardEventArgs e)
     {

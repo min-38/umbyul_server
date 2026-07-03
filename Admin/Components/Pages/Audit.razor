@@ -23,7 +23,17 @@
 }
 else
 {
-    <button class="btn btn-sm btn-outline-secondary mb-3" @onclick="Load" disabled="@Busy">새로고침</button>
+    <div class="mb-3 d-flex flex-wrap align-items-center gap-1">
+        <input class="form-control form-control-sm" style="width:150px" placeholder="동작(action)" @bind="fAction" @bind:event="oninput" @onkeyup="OnKey" />
+        <input class="form-control form-control-sm" style="width:150px" placeholder="관리자" @bind="fAdmin" @bind:event="oninput" @onkeyup="OnKey" />
+        <select class="form-select form-select-sm" style="width:auto" @bind="fPeriod" @bind:after="Load">
+            <option value="">전체 기간</option>
+            <option value="1">최근 1일</option>
+            <option value="7">최근 7일</option>
+            <option value="30">최근 30일</option>
+        </select>
+        <button class="btn btn-sm btn-primary" @onclick="Load" disabled="@Busy">검색</button>
+    </div>
 
     @if (actions is null)
     {
@@ -52,17 +62,58 @@ else
             </tbody>
         </table>
         </div>
+
+        @if (hasMore)
+        {
+            <div class="text-center mt-3">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+            </div>
+        }
     }
 }
 
 @code {
+    private const int PageSize = 50;
     private List<AdminActionRow>? actions;
+    private string fAction = "";
+    private string fAdmin = "";
+    private string fPeriod = "";
+    private int offset;
+    private bool hasMore;
 
     protected override async Task OnInitializedAsync() => await Load();
+
+    private DateTimeOffset? Since() => fPeriod switch
+    {
+        "1" => DateTimeOffset.UtcNow.AddDays(-1),
+        "7" => DateTimeOffset.UtcNow.AddDays(-7),
+        "30" => DateTimeOffset.UtcNow.AddDays(-30),
+        _ => null,
+    };
 
     private async Task Load()
     {
         actions = null;
-        await LoadAsync(async () => actions = await Db.RecentActionsAsync(100));
+        offset = 0;
+        await LoadAsync(async () =>
+        {
+            var page = await Db.RecentActionsAsync(fAction, fAdmin, Since(), 0, PageSize);
+            actions = page;
+            offset = page.Count;
+            hasMore = page.Count == PageSize;
+        });
+    }
+
+    private Task LoadMore() => RunAsync(async () =>
+    {
+        var page = await Db.RecentActionsAsync(fAction, fAdmin, Since(), offset, PageSize);
+        actions!.AddRange(page);
+        offset += page.Count;
+        hasMore = page.Count == PageSize;
+    });
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Load();
     }
 }

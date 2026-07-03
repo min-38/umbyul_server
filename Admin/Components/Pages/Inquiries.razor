@@ -14,10 +14,19 @@
     <p class="subtitle">접수된 문의를 열람하고 처리 완료를 표시합니다. 답변은 이메일로 직접 보내세요.</p>
 </div>
 
-<div class="mb-3 d-flex align-items-center gap-1">
+<div class="mb-3 d-flex flex-wrap align-items-center gap-1">
     <span class="text-muted small me-1">보기</span>
     <button class="btn btn-sm @(filter == false ? "btn-primary" : "btn-outline-secondary")" @onclick="() => Load(false)">미처리</button>
     <button class="btn btn-sm @(filter is null ? "btn-primary" : "btn-outline-secondary")" @onclick="() => Load(null)">전체</button>
+    <input class="form-control form-control-sm ms-2" style="width:200px" placeholder="제목·내용·이메일 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+    <select class="form-select form-select-sm" style="width:auto" @bind="category" @bind:after="() => Load(filter)">
+        <option value="">전체 카테고리</option>
+        @foreach (var c in categories)
+        {
+            <option value="@c">@c</option>
+        }
+    </select>
+    <button class="btn btn-sm btn-primary" @onclick="() => Load(filter)" disabled="@Busy">검색</button>
     <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="() => Load(filter)" disabled="@Busy">새로고침</button>
 </div>
 
@@ -89,20 +98,57 @@ else
         </tbody>
     </table>
     </div>
+
+    @if (hasMore)
+    {
+        <div class="text-center mt-3">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+        </div>
+    }
 }
 
 @code {
+    private const int PageSize = 50;
     private List<InquiryRow>? items;
     private bool? filter = false; // 기본: 미처리
+    private string search = "";
+    private string category = "";
+    private List<string> categories = [];
     private Guid? openId;
+    private int offset;
+    private bool hasMore;
 
-    protected override async Task OnInitializedAsync() => await Load(filter);
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync(async () => categories = await Db.InquiryCategoriesAsync());
+        await Load(filter);
+    }
 
     private async Task Load(bool? f)
     {
         filter = f;
         items = null;
-        await LoadAsync(async () => items = await Db.ListInquiriesAsync(f));
+        offset = 0;
+        await LoadAsync(async () =>
+        {
+            var page = await Db.ListInquiriesAsync(f, search, category, 0, PageSize);
+            items = page;
+            offset = page.Count;
+            hasMore = page.Count == PageSize;
+        });
+    }
+
+    private Task LoadMore() => RunAsync(async () =>
+    {
+        var page = await Db.ListInquiriesAsync(filter, search, category, offset, PageSize);
+        items!.AddRange(page);
+        offset += page.Count;
+        hasMore = page.Count == PageSize;
+    });
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Load(filter);
     }
 
     private void Toggle(Guid id) => openId = openId == id ? null : id;

@@ -101,15 +101,25 @@ else
         </tbody>
     </table>
     </div>
+
+    @if (hasMore)
+    {
+        <div class="text-center mt-3">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+        </div>
+    }
 }
 
 @code {
     private static readonly (string, string)[] Filters =
         [("pending", "대기"), ("reviewed", "검토됨"), ("resolved", "해결됨"), ("", "전체")];
 
+    private const int PageSize = 50;
     private List<ReportRow>? reports;
     private string filter = "pending";
     private Guid? openSanction;
+    private int offset;
+    private bool hasMore;
 
     protected override async Task OnInitializedAsync() => await Load(filter);
 
@@ -119,8 +129,23 @@ else
     {
         filter = status;
         reports = null;
-        await LoadAsync(async () => reports = await Db.GetReportsAsync(status));
+        offset = 0;
+        await LoadAsync(async () =>
+        {
+            var page = await Db.GetReportsAsync(status, 0, PageSize);
+            reports = page;
+            offset = page.Count;
+            hasMore = page.Count == PageSize;
+        });
     }
+
+    private Task LoadMore() => RunAsync(async () =>
+    {
+        var page = await Db.GetReportsAsync(filter, offset, PageSize);
+        reports!.AddRange(page);
+        offset += page.Count;
+        hasMore = page.Count == PageSize;
+    });
 
     private async Task<Actor> CurrentActor()
     {
