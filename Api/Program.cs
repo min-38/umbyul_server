@@ -6,6 +6,7 @@ using Api.Common;
 using Api.Detail;
 using Api.Discover;
 using Api.Faq;
+using Api.Feed;
 using Api.Home;
 using Api.Inquiry;
 using Api.Legal;
@@ -198,6 +199,9 @@ app.MapAccountEndpoints(dbConnString);
 
 // 홈 피드 (/home) — 공개(옵셔널 인증), DB만 조회 (NON-43)
 app.MapHomeEndpoints(dbConnString);
+
+// 홈 피드 v2 (/feed) — 공개(옵셔널 인증), Reddit식 정렬 + 반응 집계 (NON-88)
+app.MapFeedEndpoints(dbConnString);
 
 // Discover (/discover) — 공개, DB만 조회: 신규·급상승 (NON-81)
 app.MapDiscoverEndpoints(dbConnString);
