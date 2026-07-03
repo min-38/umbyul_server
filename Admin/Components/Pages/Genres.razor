@@ -1,0 +1,193 @@
+@page "/genres"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>장르</PageTitle>
+
+<div class="page-header">
+    <h1>장르</h1>
+    <p class="subtitle">유저 태깅용 큐레이트 장르 사전. 장르명은 영어 단일, 상위 → 하위 2단계. slug는 자동 생성됩니다.</p>
+</div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+@if (notice is not null)
+{
+    <div class="alert @(noticeErr ? "alert-danger" : "alert-success") py-2">@notice</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body d-flex align-items-center gap-2 py-2">
+            <span class="text-muted small">@(genres.Count)개 장르</span>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 장르</button>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:4rem">순서</th><th>장르</th><th style="width:9rem">slug</th><th style="width:4rem">태그</th><th style="width:4rem"></th></tr></thead>
+            <tbody>
+                @if (genres.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-center text-muted py-4">장르가 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var (row, child) in Ordered())
+                    {
+                        <tr class="@(editing && row.Id == id ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(row)">
+                            <td class="text-muted">@row.SortOrder</td>
+                            <td style="@(child ? "padding-left:2.25rem" : "")">
+                                @if (child)
+                                {
+                                    <span class="text-muted">↳ </span>
+                                }
+                                @row.Name
+                            </td>
+                            <td class="text-muted small font-monospace">@row.Slug</td>
+                            <td class="text-muted">@(row.TagCount > 0 ? row.TagCount.ToString() : "—")</td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" @onclick:stopPropagation disabled="@Busy">삭제</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (editing)
+    {
+        var lockedTop = id is { } eid && ChildrenOf(eid).Any();
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    <span class="badge @(id is null ? "bg-primary" : "bg-secondary")">@(id is null ? "새 장르" : "편집")</span>
+                    <input class="form-control form-control-sm" style="width:200px" placeholder="장르명 (영어)" @bind="name" />
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">상위</span>
+                        <select class="form-select form-select-sm" style="width:auto" @bind="parentIdStr" disabled="@lockedTop">
+                            <option value="">— 없음(최상위) —</option>
+                            @foreach (var top in TopGenres.Where(t => t.Id != id))
+                            {
+                                <option value="@top.Id">@top.Name</option>
+                            }
+                        </select>
+                    </span>
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">순서</span>
+                        <input type="number" class="form-control form-control-sm" style="width:90px" @bind="sortOrder" />
+                    </span>
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
+                    @if (msg is not null)
+                    {
+                        <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                    @if (lockedTop)
+                    {
+                        <span class="text-muted small">하위 장르가 있어 상위로 옮길 수 없습니다.</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<GenreAdminRow> genres = [];
+    private bool editing;
+    private int? id;
+    private string name = "";
+    private string parentIdStr = "";
+    private int sortOrder;
+    private string? msg;
+    private bool err;
+    private string? notice;
+    private bool noticeErr;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load() => await LoadAsync(async () => genres = await Db.ListGenresAsync());
+
+    private IEnumerable<GenreAdminRow> TopGenres => genres.Where(g => g.ParentId is null);
+    private IEnumerable<GenreAdminRow> ChildrenOf(int pid) => genres.Where(g => g.ParentId == pid);
+
+    // 상위 → 그 하위들 순으로 평탄화(들여쓰기 렌더용).
+    private IEnumerable<(GenreAdminRow Row, bool Child)> Ordered()
+    {
+        foreach (var top in TopGenres)
+        {
+            yield return (top, false);
+            foreach (var kid in ChildrenOf(top.Id)) yield return (kid, true);
+        }
+    }
+
+    private void NewItem()
+    {
+        editing = true;
+        id = null;
+        name = "";
+        parentIdStr = "";
+        sortOrder = (genres.Count > 0 ? genres.Max(g => g.SortOrder) : 0) + 10;
+        msg = null;
+    }
+
+    private void Edit(GenreAdminRow row)
+    {
+        editing = true;
+        id = row.Id;
+        name = row.Name;
+        parentIdStr = row.ParentId?.ToString() ?? "";
+        sortOrder = row.SortOrder;
+        msg = null;
+    }
+
+    private void CloseEditor() { editing = false; msg = null; }
+
+    private async Task Save()
+    {
+        if (string.IsNullOrWhiteSpace(name)) { err = true; msg = "장르명을 입력하세요."; return; }
+        int? parentId = string.IsNullOrEmpty(parentIdStr) ? null : int.Parse(parentIdStr);
+        await RunAsync(async () =>
+        {
+            var actor = await CurrentActor();
+            var (ok, error) = id is { } eid
+                ? await Db.UpdateGenreAsync(eid, name, parentId, sortOrder, actor)
+                : await Db.CreateGenreAsync(name, parentId, sortOrder, actor);
+            if (!ok) { err = true; msg = error ?? "저장하지 못했습니다."; return; }
+            err = false; msg = "저장됨";
+            notice = null;
+            genres = await Db.ListGenresAsync();
+            if (id is null) editing = false; // 새로 만든 뒤엔 편집기 닫기(id 미확보)
+        });
+    }
+
+    private Task Delete(GenreAdminRow row) => RunAsync(async () =>
+    {
+        var (ok, error) = await Db.DeleteGenreAsync(row.Id, await CurrentActor());
+        if (!ok) { noticeErr = true; notice = error; return; }
+        noticeErr = false; notice = $"'{row.Name}' 삭제됨";
+        if (id == row.Id) editing = false;
+        genres = await Db.ListGenresAsync();
+    }, confirm: $"'{row.Name}'을(를) 삭제할까요?" + (row.TagCount > 0 ? $" 유저 태그 {row.TagCount}개도 함께 삭제됩니다." : ""));
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}
