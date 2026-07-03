@@ -14,7 +14,7 @@ public sealed record ProfileReview(
     DateTimeOffset CreatedAt, int LikeCount, string? Name, string? Artist, string? ImageUrl, bool Deleted);
 
 public sealed record UserProfile(
-    string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
+    string Id, string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
     int ReviewCount, int TotalLikes,
     int FollowerCount, int FollowingCount, bool IsFollowing,
     IReadOnlyList<ProfileReview> Reviews);
@@ -97,7 +97,7 @@ public static class PublicProfileEndpoints
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(
-                uname, avatar, joined, active.Count, totalLikes, followers, following, isFollowing, reviews));
+                uid.ToString(), uname, avatar, joined, active.Count, totalLikes, followers, following, isFollowing, reviews));
         });
     }
 
