@@ -17,11 +17,18 @@ public static class Moderation
             if (!await r.ReadAsync(ct)) return null;
             var banned = !r.IsDBNull(0) && r.GetBoolean(0);
             var until = r.IsDBNull(1) ? (DateTimeOffset?)null : r.GetFieldValue<DateTimeOffset>(1);
-            if (banned) return new SanctionBlock(true, null);
-            if (until is { } u && u > DateTimeOffset.UtcNow) return new SanctionBlock(false, u);
-            return null;
+            return Evaluate(banned, until, DateTimeOffset.UtcNow);
         }
         catch (NpgsqlException) { return null; } // 컬럼 미존재 등 — 통과
+    }
+
+    /// 제재 판정(순수 함수라 단위 테스트 가능). 영구정지 우선, 다음 정지(until > now)면 정지, 아니면 통과.
+    /// 경계: until == now 는 만료(통과)로 본다.
+    public static SanctionBlock? Evaluate(bool banned, DateTimeOffset? until, DateTimeOffset now)
+    {
+        if (banned) return new SanctionBlock(true, null);
+        if (until is { } u && u > now) return new SanctionBlock(false, u);
+        return null;
     }
 
     /// 차단 시 표준 403 응답(정지: until 포함 / 영구정지).
