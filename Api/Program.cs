@@ -8,6 +8,7 @@ using Api.Detail;
 using Api.Discover;
 using Api.Faq;
 using Api.Feed;
+using Api.Genre;
 using Api.Home;
 using Api.Inquiry;
 using Api.Legal;
@@ -207,6 +208,9 @@ app.MapSearchEndpoints(dbConnString);
 
 // 앨범/곡 상세 (/detail/track, /detail/album) — Spotify 라이브 + 평점/리뷰 (NON-6)
 app.MapDetailEndpoints(dbConnString);
+
+// 유저 장르 태깅 (/genres, /genres/for, /me/genre-tags) — 커뮤니티 큐레이트 (NON-122)
+app.MapGenreEndpoints(dbConnString);
 
 // 아티스트 상세 (/artist/{id}) — 공개, Spotify + 커뮤니티 평가 배지 (NON-13)
 app.MapArtistEndpoints(dbConnString);
