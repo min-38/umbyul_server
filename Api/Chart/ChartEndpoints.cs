@@ -21,6 +21,7 @@ public static class ChartEndpoints
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
 
+            var isArtist = type == "artist"; // 앨범/곡 평가를 아티스트별로 집계
             var t = type is "album" or "track" ? type : null; // all => 타입 무관
             var typeClause = t is null ? "" : "and r.target_type = @type";
             var orderBy = sort == "most" ? "v desc, wr desc" : "wr desc, v desc"; // 기본 top
@@ -43,11 +44,17 @@ public static class ChartEndpoints
                 _ => "",
             };
             var filters = $"{typeClause} {interval} {genderClause} {ageClause}";
+            // 아티스트: 타입 무관, target_artists 있는 것만. 나머지 필터는 동일.
+            var artistFilters = $"{interval} {genderClause} {ageClause} and r.target_artists is not null";
 
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync(ct);
+
+                if (isArtist)
+                    return await LoadArtistChartAsync(conn, artistFilters, orderBy, g, ct);
+
                 await using var cmd = new NpgsqlCommand(
                     $"""
                     with base as (
@@ -162,6 +169,47 @@ public static class ChartEndpoints
     private static string AgeExists(string cond) =>
         $"and exists (select 1 from public.users u where u.id = r.user_id and u.birth_date is not null and date_part('year', age(u.birth_date)) {cond})";
 
+    // 아티스트 차트(NON-87): 앨범/곡 평가를 target_artists 로 펼쳐 아티스트별 집계. 커버 없음.
+    private static async Task<IResult> LoadArtistChartAsync(
+        NpgsqlConnection conn, string filters, string orderBy, string? gender, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(
+            $"""
+            with base as (
+              select coalesce(elem->>'Id', elem->>'id') aid,
+                     max(coalesce(elem->>'Name', elem->>'name')) aname,
+                     count(*) v, avg(r.score) r
+              from public.ratings r
+              cross join lateral jsonb_array_elements(r.target_artists) elem
+              where r.target_spotify_id is not null and r.deleted_at is null {filters}
+              group by coalesce(elem->>'Id', elem->>'id')
+            ),
+            gc as (
+              select avg(r.score) c
+              from public.ratings r
+              cross join lateral jsonb_array_elements(r.target_artists) elem
+              where r.target_spotify_id is not null and r.deleted_at is null {filters}
+            )
+            select b.aid, b.aname, b.v, round(b.r, 2)::float8,
+                   (b.v::numeric / (b.v + @m)) * b.r + (@m::numeric / (b.v + @m)) * gc.c as wr
+            from base b cross join gc
+            where b.aid is not null and b.v >= @minv
+            order by {orderBy}
+            limit 100
+            """, conn);
+        cmd.Parameters.AddWithValue("m", M);
+        cmd.Parameters.AddWithValue("minv", MinV);
+        if (gender is not null) cmd.Parameters.AddWithValue("gender", gender);
+
+        var list = new List<ArtistRankItem>();
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        while (await rd.ReadAsync(ct))
+            list.Add(new ArtistRankItem(
+                rd.GetString(0), rd.IsDBNull(1) ? null : rd.GetString(1),
+                (int)rd.GetInt64(2), rd.GetDouble(3)));
+        return ApiResults.Ok("OK", new ArtistChartData(list));
+    }
+
     private static IReadOnlyList<ArtistRef>? ParseArtists(string json)
     {
         try { return JsonSerializer.Deserialize<List<ArtistRef>>(json); }
@@ -175,3 +223,5 @@ public sealed record ChartItem(
 public sealed record ChartData(IReadOnlyList<ChartItem> Items);
 public sealed record UserRankItem(string UserId, string Username, string? AvatarUrl, int Count);
 public sealed record UserChartData(IReadOnlyList<UserRankItem> Items);
+public sealed record ArtistRankItem(string ArtistId, string? ArtistName, int Count, double Average);
+public sealed record ArtistChartData(IReadOnlyList<ArtistRankItem> Items);
