@@ -209,6 +209,9 @@ app.MapSearchEndpoints(dbConnString);
 // 앨범/곡 상세 (/detail/track, /detail/album) — Spotify 라이브 + 평점/리뷰 (NON-6)
 app.MapDetailEndpoints(dbConnString);
 
+// 평점 시세 (/detail/rating-history) — 일별 누적 평균 시계열 (NON-124)
+app.MapRatingHistoryEndpoints(dbConnString);
+
 // 유저 장르 태깅 (/genres, /genres/for, /me/genre-tags) — 커뮤니티 큐레이트 (NON-122)
 app.MapGenreEndpoints(dbConnString);
 
