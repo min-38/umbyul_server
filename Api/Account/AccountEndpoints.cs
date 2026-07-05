@@ -93,7 +93,7 @@ public static class AccountEndpoints
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
-            if (body.Locale is not ("ko" or "en")) return ApiResults.BadRequest("INVALID_LOCALE");
+            if (body.Locale is not ("ko" or "en" or "ja" or "es")) return ApiResults.BadRequest("INVALID_LOCALE");
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
