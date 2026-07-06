@@ -47,9 +47,13 @@ public static class NotificationEndpoints
                     {
                         var type = rd.GetString(1);
                         var actor = rd.IsDBNull(5) ? "" : rd.GetString(5); // warning 은 발신 유저 없음
+                        var detail = rd.IsDBNull(9) ? null : rd.GetString(9); // mention 은 댓글 id, warning 은 사유
                         string? link = type switch
                         {
                             "follow" => $"/u/{actor}",
+                            // 멘션: 해당 댓글로 딥링크(?c=댓글id → 리뷰 열고 그 댓글로 스크롤, BUG-3).
+                            "mention" when !rd.IsDBNull(7) && !rd.IsDBNull(8) && detail is not null =>
+                                $"/{rd.GetString(7)}/{rd.GetString(8)}?c={detail}#review-{rd.GetString(2)}",
                             // 리뷰로 딥링크: /{track|album}/{spotifyId}#review-{ratingId} (NON-60, 기존 앵커 관례)
                             "review_like" or "warning" or "mention" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}#review-{rd.GetString(2)}",
                             _ => null,
@@ -59,7 +63,7 @@ public static class NotificationEndpoints
                             rd.IsDBNull(6) ? null : rd.GetString(6),
                             rd.GetFieldValue<DateTimeOffset>(4),
                             !rd.IsDBNull(3), link,
-                            rd.IsDBNull(9) ? null : rd.GetString(9)));
+                            type == "mention" ? null : detail)); // mention detail(댓글 id)은 UI 노출 안 함
                     }
                 }
 

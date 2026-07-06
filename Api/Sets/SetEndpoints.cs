@@ -30,7 +30,7 @@ public static class SetEndpoints
     public sealed record TrackLinkRequest(string? YoutubeUrl);
     public sealed record ReorderRequest(List<string>? SpotifyIds);
     public sealed record SetCommentRequest(string? Body);
-    public sealed record SetCommentItem(string Id, string UserId, string Username, string? AvatarUrl, string Body, DateTimeOffset CreatedAt);
+    public sealed record SetCommentItem(string Id, string UserId, string Username, string? AvatarUrl, string Body, DateTimeOffset CreatedAt, bool Edited);
 
     public sealed record SetTrackItem(
         string SpotifyId, int Position, string? Isrc, string Name, string Artist, string? ImageUrl, string? YoutubeUrl,
@@ -461,7 +461,7 @@ public static class SetEndpoints
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
                     """
-                    select c.id, c.user_id, u.username, u.avatar_url, c.body, c.created_at
+                    select c.id, c.user_id, u.username, u.avatar_url, c.body, c.created_at, (c.edited_at is not null)
                     from public.set_comments c
                     join public.users u on u.id = c.user_id
                     where c.set_id = @sid and c.deleted_at is null
@@ -473,7 +473,7 @@ public static class SetEndpoints
                 while (await rd.ReadAsync())
                     items.Add(new SetCommentItem(
                         rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
-                        rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5)));
+                        rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5), rd.GetBoolean(6)));
                 return ApiResults.Ok("OK", new { items });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -509,7 +509,7 @@ public static class SetEndpoints
                 await rd.ReadAsync();
                 var item = new SetCommentItem(
                     rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
-                    rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5));
+                    rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5), false);
                 return ApiResults.Created("CREATED", item);
             }
             catch (PostgresException ex) when (ex.SqlState == "23503") { return ApiResults.BadRequest("INVALID_TARGET"); }
@@ -549,7 +549,7 @@ public static class SetEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
-                    "update public.set_comments set body = @body where id = @cid and user_id = @uid and deleted_at is null", conn);
+                    "update public.set_comments set body = @body, edited_at = now() where id = @cid and user_id = @uid and deleted_at is null", conn);
                 cmd.Parameters.AddWithValue("body", body);
                 cmd.Parameters.AddWithValue("cid", cid);
                 cmd.Parameters.AddWithValue("uid", uid);

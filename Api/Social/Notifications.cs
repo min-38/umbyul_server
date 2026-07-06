@@ -39,15 +39,16 @@ public static class Notifications
     /// 댓글 @멘션 알림 (NON-131). master·mention 설정 off 이거나 그 대상(트랙/앨범) 멘션 뮤트면 적재 안 함.
     public static async Task CreateMentionAsync(
         NpgsqlConnection conn, Guid recipientId, Guid actorId, string ratingId,
-        string targetType, string targetSpotifyId)
+        string commentId, string targetType, string targetSpotifyId)
     {
         if (recipientId == actorId) return;
         try
         {
+            // detail 에 멘션이 달린 댓글 id 저장 → 알림 클릭 시 해당 댓글로 딥링크(BUG-3).
             await using var cmd = new NpgsqlCommand(
                 """
-                insert into public.notifications (recipient_id, actor_id, type, target_id)
-                select @r, @a, 'mention', @tid
+                insert into public.notifications (recipient_id, actor_id, type, target_id, detail)
+                select @r, @a, 'mention', @tid, @cid
                 where not exists (
                     select 1 from public.notification_prefs p
                     where p.user_id = @r and (p.master = false or p.mention = false)
@@ -60,6 +61,7 @@ public static class Notifications
             cmd.Parameters.AddWithValue("r", recipientId);
             cmd.Parameters.AddWithValue("a", actorId);
             cmd.Parameters.AddWithValue("tid", ratingId);
+            cmd.Parameters.AddWithValue("cid", commentId);
             cmd.Parameters.AddWithValue("tt", targetType);
             cmd.Parameters.AddWithValue("tsid", targetSpotifyId);
             await cmd.ExecuteNonQueryAsync();

@@ -19,7 +19,7 @@ public static class CommentEndpoints
     public sealed record CommentRequest(string? RatingId, string? ParentId, string? Body);
     public sealed record CommentItem(
         string Id, string? ParentId, string UserId, string Username, string? AvatarUrl,
-        string? Body, DateTimeOffset CreatedAt, int LikeCount, bool LikedByMe, double? Score, bool Deleted);
+        string? Body, DateTimeOffset CreatedAt, int LikeCount, bool LikedByMe, double? Score, bool Deleted, bool Edited);
 
     public static void MapCommentEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -43,7 +43,8 @@ public static class CommentEndpoints
                            (select count(*) from public.comment_likes cl where cl.comment_id = c.id)::int as like_count,
                            (@me is not null and exists (select 1 from public.comment_likes cl where cl.comment_id = c.id and cl.user_id = @me)) as liked,
                            cr.score::float8 as score,
-                           (c.deleted_at is not null) as deleted
+                           (c.deleted_at is not null) as deleted,
+                           (c.edited_at is not null) as edited
                     from public.review_comments c
                     join public.users u on u.id = c.user_id
                     cross join tgt
@@ -130,12 +131,12 @@ public static class CommentEndpoints
                     item = new CommentItem(
                         commentId, r.IsDBNull(1) ? null : r.GetGuid(1).ToString(), r.GetGuid(2).ToString(),
                         r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetString(5), r.GetFieldValue<DateTimeOffset>(6),
-                        0, false, r.IsDBNull(7) ? null : r.GetDouble(7), false);
+                        0, false, r.IsDBNull(7) ? null : r.GetDouble(7), false, false);
                 }
 
-                // @멘션 알림 — 본문의 실존 유저에게 적재(대상 정보 있을 때만).
+                // @멘션 알림 — 본문의 실존 유저에게 적재(대상 정보 있을 때만). 알림 클릭 시 해당 댓글로 딥링크(BUG-3).
                 if (targetType is not null && targetSpotifyId is not null)
-                    await NotifyMentionsAsync(conn, body, uid, rid, targetType, targetSpotifyId);
+                    await NotifyMentionsAsync(conn, body, uid, rid, commentId, targetType, targetSpotifyId);
 
                 return ApiResults.Created("CREATED", item);
             }
@@ -201,11 +202,35 @@ public static class CommentEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+
+        // 댓글 수정 — 본인 것만(삭제되지 않은 것). edited_at 기록 → 목록에서 '(수정됨)' 표시(BUG-11).
+        me.MapPut("/comments/{id}", async (string id, CommentRequest req, ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            if (!Guid.TryParse(id, out var cid)) return ApiResults.BadRequest("INVALID_TARGET");
+            var body = req.Body?.Trim();
+            if (string.IsNullOrEmpty(body) || body.Length > MaxBodyLength) return ApiResults.BadRequest("INVALID_BODY");
+
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "update public.review_comments set body = @body, edited_at = now() where id = @cid and user_id = @uid and deleted_at is null", conn);
+                cmd.Parameters.AddWithValue("body", body);
+                cmd.Parameters.AddWithValue("cid", cid);
+                cmd.Parameters.AddWithValue("uid", uid);
+                if (await cmd.ExecuteNonQueryAsync() == 0) return ApiResults.NotFound("COMMENT_NOT_FOUND");
+                return ApiResults.Ok("OK");
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
     }
 
     // 본문에서 @핸들을 뽑아 실존 유저로 해석 → 각자에게 멘션 알림. self·설정off·대상뮤트는 헬퍼가 걸러냄.
     private static async Task NotifyMentionsAsync(
-        NpgsqlConnection conn, string body, Guid actorId, Guid ratingId, string targetType, string targetSpotifyId)
+        NpgsqlConnection conn, string body, Guid actorId, Guid ratingId, string commentId, string targetType, string targetSpotifyId)
     {
         var names = MentionPattern.Matches(body)
             .Select(m => m.Groups[1].Value.ToLowerInvariant())
@@ -225,7 +250,7 @@ public static class CommentEndpoints
                 while (await rd.ReadAsync()) recipients.Add(rd.GetGuid(0));
             }
             foreach (var rid in recipients)
-                await Notifications.CreateMentionAsync(conn, rid, actorId, ratingId.ToString(), targetType, targetSpotifyId);
+                await Notifications.CreateMentionAsync(conn, rid, actorId, ratingId.ToString(), commentId, targetType, targetSpotifyId);
         }
         catch (NpgsqlException) { /* 멘션 알림 실패 무시 */ }
     }
@@ -241,7 +266,8 @@ public static class CommentEndpoints
         r.GetInt32(7),
         r.GetBoolean(8),
         r.IsDBNull(9) ? null : r.GetDouble(9),
-        r.GetBoolean(10));
+        r.GetBoolean(10),
+        r.GetBoolean(11));
 
     private static Guid? Sub(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
