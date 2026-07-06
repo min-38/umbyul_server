@@ -26,7 +26,7 @@ public static class SetEndpoints
     public sealed record SetCreateRequest(string? Title, string? Note, string? ListenUrl);
     public sealed record TrackAddRequest(
         string? SpotifyId, string? Isrc, string? Name, string? Artist, string? ImageUrl, string? YoutubeUrl,
-        string? AlbumId, string? AlbumName, List<TrackArtist>? Artists);
+        string? AlbumId, string? AlbumName, List<TrackArtist>? Artists, bool Explicit = false);
     public sealed record TrackLinkRequest(string? YoutubeUrl);
     public sealed record ReorderRequest(List<string>? SpotifyIds);
     public sealed record SetCommentRequest(string? Body);
@@ -34,7 +34,7 @@ public static class SetEndpoints
 
     public sealed record SetTrackItem(
         string SpotifyId, int Position, string? Isrc, string Name, string Artist, string? ImageUrl, string? YoutubeUrl,
-        string? AlbumId, string? AlbumName, IReadOnlyList<TrackArtist> Artists, double? MyScore, string? MyReview);
+        string? AlbumId, string? AlbumName, IReadOnlyList<TrackArtist> Artists, bool Explicit, double? MyScore, string? MyReview);
     public sealed record SetSummary(
         string Id, string OwnerId, string OwnerUsername, string? OwnerAvatarUrl,
         string Title, string? Note, string? ListenUrl, DateTimeOffset CreatedAt, int TrackCount, DateTimeOffset UpdatedAt,
@@ -123,7 +123,7 @@ public static class SetEndpoints
                 await using (var cmd = new NpgsqlCommand(
                     """
                     select t.spotify_id, t.position, t.isrc, t.name, t.artist, t.image_url, t.youtube_url,
-                           t.album_id, t.album_name, t.artists,
+                           t.album_id, t.album_name, t.artists, t.explicit,
                            r.score::float8 as my_score, r.review as my_review
                     from public.set_tracks t
                     left join public.ratings r
@@ -142,7 +142,8 @@ public static class SetEndpoints
                             rd.IsDBNull(6) ? null : rd.GetString(6),
                             rd.IsDBNull(7) ? null : rd.GetString(7), rd.IsDBNull(8) ? null : rd.GetString(8),
                             ParseArtists(rd.IsDBNull(9) ? null : rd.GetString(9)),
-                            rd.IsDBNull(10) ? null : rd.GetDouble(10), rd.IsDBNull(11) ? null : rd.GetString(11)));
+                            rd.GetBoolean(10),
+                            rd.IsDBNull(11) ? null : rd.GetDouble(11), rd.IsDBNull(12) ? null : rd.GetString(12)));
                 }
                 return ApiResults.Ok("OK", new SetDetail(summary, tracks));
             }
@@ -311,9 +312,9 @@ public static class SetEndpoints
 
                 await using var cmd = new NpgsqlCommand(
                     """
-                    insert into public.set_tracks (set_id, spotify_id, position, isrc, name, artist, image_url, youtube_url, album_id, album_name, artists)
+                    insert into public.set_tracks (set_id, spotify_id, position, isrc, name, artist, image_url, youtube_url, album_id, album_name, artists, explicit)
                     values (@sid, @sp, (select coalesce(max(position), -1) + 1 from public.set_tracks where set_id = @sid),
-                            @isrc, @name, @artist, @img, @yt, @albid, @albname, @artists)
+                            @isrc, @name, @artist, @img, @yt, @albid, @albname, @artists, @exp)
                     on conflict (set_id, spotify_id) do nothing
                     """, conn);
                 cmd.Parameters.AddWithValue("sid", sid);
@@ -326,6 +327,7 @@ public static class SetEndpoints
                 cmd.Parameters.Add(new NpgsqlParameter("albid", NpgsqlDbType.Text) { Value = (object?)req.AlbumId ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("albname", NpgsqlDbType.Text) { Value = (object?)Trunc(req.AlbumName, 300) ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)(req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null) ?? DBNull.Value });
+                cmd.Parameters.AddWithValue("exp", req.Explicit);
                 await cmd.ExecuteNonQueryAsync();
                 await TouchAsync(conn, sid);
                 return ApiResults.Ok("OK");
@@ -426,7 +428,7 @@ public static class SetEndpoints
                     """
                     update public.set_tracks
                     set spotify_id = @new, isrc = @isrc, name = @name, artist = @artist, image_url = @img,
-                        youtube_url = @yt, album_id = @albid, album_name = @albname, artists = @artists
+                        youtube_url = @yt, album_id = @albid, album_name = @albname, artists = @artists, explicit = @exp
                     where set_id = @sid and spotify_id = @old
                     """, conn);
                 cmd.Parameters.AddWithValue("new", req.SpotifyId);
@@ -440,6 +442,7 @@ public static class SetEndpoints
                 cmd.Parameters.Add(new NpgsqlParameter("albid", NpgsqlDbType.Text) { Value = (object?)req.AlbumId ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("albname", NpgsqlDbType.Text) { Value = (object?)Trunc(req.AlbumName, 300) ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)(req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null) ?? DBNull.Value });
+                cmd.Parameters.AddWithValue("exp", req.Explicit);
                 if (await cmd.ExecuteNonQueryAsync() == 0) return ApiResults.NotFound("SET_NOT_FOUND");
                 await TouchAsync(conn, sid);
                 return ApiResults.Ok("OK");

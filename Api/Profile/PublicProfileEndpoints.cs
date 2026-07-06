@@ -11,7 +11,7 @@ namespace Api.Profile;
 /// 리뷰 대상 이름/이미지는 target_spotify_id 를 Spotify 배치 조회로 라이브 해석(콘텐츠 비영구).
 public sealed record ProfileReview(
     string Id, string TargetType, string? SpotifyId, decimal Score, string? Body,
-    DateTimeOffset CreatedAt, int LikeCount, string? Name, string? Artist, string? ImageUrl, bool Deleted);
+    DateTimeOffset CreatedAt, int LikeCount, string? Name, string? Artist, string? ImageUrl, bool Deleted, bool Explicit);
 
 public sealed record UserProfile(
     string Id, string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
@@ -21,7 +21,7 @@ public sealed record UserProfile(
 
 public static class PublicProfileEndpoints
 {
-    private record Row(string Id, string Tt, string? Sid, string? TargetId, decimal Score, string? Body, DateTimeOffset Created, int Likes, bool Deleted);
+    private record Row(string Id, string Tt, string? Sid, string? TargetId, decimal Score, string? Body, DateTimeOffset Created, int Likes, bool Deleted, bool Explicit);
 
     public static void MapPublicProfileEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -91,7 +91,8 @@ public static class PublicProfileEndpoints
                 await using var rcmd = new NpgsqlCommand(
                     """
                     select r.id, r.target_type, r.target_spotify_id, r.target_id, r.score, r.review, r.created_at,
-                           count(re.id) filter (where re.value = 'like') as likes, (r.deleted_at is not null) as deleted
+                           count(re.id) filter (where re.value = 'like') as likes, (r.deleted_at is not null) as deleted,
+                           bool_or(r.target_explicit) as explicit
                     from public.ratings r
                     left join public.review_reactions re on re.rating_id = r.id
                     where r.user_id = @uid and (r.deleted_at is null or @owner)
@@ -107,7 +108,7 @@ public static class PublicProfileEndpoints
                         rr.IsDBNull(2) ? null : rr.GetString(2),
                         rr.IsDBNull(3) ? null : rr.GetString(3), rr.GetDecimal(4),
                         rr.IsDBNull(5) ? null : rr.GetString(5), rr.GetFieldValue<DateTimeOffset>(6),
-                        (int)rr.GetInt64(7), rr.GetBoolean(8)));
+                        (int)rr.GetInt64(7), rr.GetBoolean(8), rr.GetBoolean(9)));
             }
             catch (NpgsqlException)
             {
@@ -123,7 +124,7 @@ public static class PublicProfileEndpoints
             var reviews = rows.Select(x =>
             {
                 display.TryGetValue(x.Id, out var d);
-                return new ProfileReview(x.Id, x.Tt, d.SpotifyId ?? x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image, x.Deleted);
+                return new ProfileReview(x.Id, x.Tt, d.SpotifyId ?? x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image, x.Deleted, x.Explicit);
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(

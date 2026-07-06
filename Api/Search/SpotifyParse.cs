@@ -23,7 +23,7 @@ public static class SpotifyParse
                     image = FirstImage(al);
                 }
                 list.Add(new TrackResult(
-                    Str(it, "id") ?? "", Str(it, "name") ?? "", FirstArtist(it), ArtistList(it), albumId, albumName, image, Isrc(it)));
+                    Str(it, "id") ?? "", Str(it, "name") ?? "", FirstArtist(it), ArtistList(it), albumId, albumName, image, Isrc(it), Bool(it, "explicit")));
             }
         }
         return (list, total);
@@ -70,6 +70,9 @@ public static class SpotifyParse
 
     private static string? Str(JsonElement e, string prop) =>
         e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static bool Bool(JsonElement e, string prop) =>
+        e.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.True;
 
     private static IReadOnlyList<ArtistLite> ArtistList(JsonElement e) =>
         e.TryGetProperty("artists", out var a) && a.ValueKind == JsonValueKind.Array

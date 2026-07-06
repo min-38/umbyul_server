@@ -48,7 +48,8 @@ public static class DiscoverEndpoints
             $"""
             select r.target_type, r.target_spotify_id, count(*), round(avg(r.score), 2)::float8,
                    max(r.target_name), max(r.target_artist), max(r.target_image_url),
-                   (array_agg(r.target_artists) filter (where r.target_artists is not null))[1]
+                   (array_agg(r.target_artists) filter (where r.target_artists is not null))[1],
+                   bool_or(r.target_explicit)
             from public.ratings r
             where r.target_spotify_id is not null and r.deleted_at is null {where}
             group by r.target_type, r.target_spotify_id
@@ -64,7 +65,8 @@ public static class DiscoverEndpoints
                 r.GetString(0), r.GetString(1), (int)r.GetInt64(2), r.GetDouble(3),
                 r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? null : r.GetString(5),
                 r.IsDBNull(6) ? null : r.GetString(6),
-                r.IsDBNull(7) ? null : ParseArtists(r.GetString(7))));
+                r.IsDBNull(7) ? null : ParseArtists(r.GetString(7)),
+                r.GetBoolean(8)));
         return list;
     }
 
@@ -80,7 +82,7 @@ public static class DiscoverEndpoints
 
 public sealed record DiscoverItem(
     string TargetType, string SpotifyId, int Count, double Average,
-    string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists);
+    string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit);
 public sealed record RisingWindows(
     IReadOnlyList<DiscoverItem> Day, IReadOnlyList<DiscoverItem> Week,
     IReadOnlyList<DiscoverItem> Month, IReadOnlyList<DiscoverItem> Year);

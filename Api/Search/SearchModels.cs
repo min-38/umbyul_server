@@ -11,7 +11,7 @@ public record CategoryResult<T>(IReadOnlyList<T> Items, int Total);
 
 // 평점/review count 는 NON-7/8 이후. 지금은 메타데이터만.
 public record ArtistLite(string Id, string Name);
-public record TrackResult(string Id, string Name, string Artist, IReadOnlyList<ArtistLite> Artists, string? AlbumId, string? AlbumName, string? ImageUrl, string? Isrc);
+public record TrackResult(string Id, string Name, string Artist, IReadOnlyList<ArtistLite> Artists, string? AlbumId, string? AlbumName, string? ImageUrl, string? Isrc, bool Explicit);
 
 public record AlbumResult(string Id, string Name, string Artist, string? ImageUrl, string? ReleaseDate);
 

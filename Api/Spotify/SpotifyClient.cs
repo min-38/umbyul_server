@@ -33,8 +33,9 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
     /// 트랙은 external_ids.isrc 포함. 앨범 upc 는 search 응답엔 없어 GET /albums/{id} 필요(NON-5).
     public async Task<string> SearchAsync(string query, string types, int limit, int offset, CancellationToken ct)
     {
+        // market=KR: explicit 플래그가 market 없이는 항상 false(실측) + KR 카탈로그 정합. id/isrc 유지.
         var url = $"https://api.spotify.com/v1/search?q={Uri.EscapeDataString(query)}" +
-                  $"&type={Uri.EscapeDataString(types)}&limit={limit}&offset={offset}";
+                  $"&type={Uri.EscapeDataString(types)}&limit={limit}&offset={offset}&market=KR";
         var (status, body) = await RequestAsync(url, ct);
         if (status != HttpStatusCode.OK)
             throw new HttpRequestException($"Spotify {(int)status} for {url} :: {body}");

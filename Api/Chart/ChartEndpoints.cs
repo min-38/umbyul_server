@@ -64,7 +64,8 @@ public static class ChartEndpoints
                       select r.target_type, r.target_spotify_id,
                              count(*) v, avg(r.score) r,
                              max(r.target_name) name, max(r.target_artist) artist, max(r.target_image_url) image,
-                             (array_agg(r.target_artists) filter (where r.target_artists is not null))[1] artists
+                             (array_agg(r.target_artists) filter (where r.target_artists is not null))[1] artists,
+                             bool_or(r.target_explicit) explicit
                       from public.ratings r
                       where r.target_spotify_id is not null and r.deleted_at is null {filters}
                       group by r.target_type, r.target_spotify_id
@@ -74,7 +75,7 @@ public static class ChartEndpoints
                       where r.target_spotify_id is not null and r.deleted_at is null {filters}
                     )
                     select b.target_type, b.target_spotify_id, b.v, round(b.r, 2)::float8,
-                           b.name, b.artist, b.image, b.artists,
+                           b.name, b.artist, b.image, b.artists, b.explicit,
                            (b.v::numeric / (b.v + @m)) * b.r + (@m::numeric / (b.v + @m)) * gc.c as wr
                     from base b cross join gc
                     where b.v >= @minv
@@ -95,7 +96,8 @@ public static class ChartEndpoints
                         rd.GetString(0), rd.GetString(1), (int)rd.GetInt64(2), rd.GetDouble(3),
                         rd.IsDBNull(4) ? null : rd.GetString(4), rd.IsDBNull(5) ? null : rd.GetString(5),
                         rd.IsDBNull(6) ? null : rd.GetString(6),
-                        rd.IsDBNull(7) ? null : ParseArtists(rd.GetString(7))));
+                        rd.IsDBNull(7) ? null : ParseArtists(rd.GetString(7)),
+                        rd.GetBoolean(8)));
                 return ApiResults.Ok("OK", new ChartData(list));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -232,7 +234,7 @@ public static class ChartEndpoints
 
 public sealed record ChartItem(
     string TargetType, string SpotifyId, int Count, double Average,
-    string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists);
+    string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit);
 public sealed record ChartData(IReadOnlyList<ChartItem> Items);
 public sealed record UserRankItem(string UserId, string Username, string? AvatarUrl, int Count);
 public sealed record UserChartData(IReadOnlyList<UserRankItem> Items);
