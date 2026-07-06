@@ -35,4 +35,35 @@ public static class Notifications
         }
         catch (NpgsqlException) { /* 알림 실패 무시 */ }
     }
+
+    /// 댓글 @멘션 알림 (NON-131). master·mention 설정 off 이거나 그 대상(트랙/앨범) 멘션 뮤트면 적재 안 함.
+    public static async Task CreateMentionAsync(
+        NpgsqlConnection conn, Guid recipientId, Guid actorId, string ratingId,
+        string targetType, string targetSpotifyId)
+    {
+        if (recipientId == actorId) return;
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                insert into public.notifications (recipient_id, actor_id, type, target_id)
+                select @r, @a, 'mention', @tid
+                where not exists (
+                    select 1 from public.notification_prefs p
+                    where p.user_id = @r and (p.master = false or p.mention = false)
+                )
+                and not exists (
+                    select 1 from public.mention_mutes m
+                    where m.user_id = @r and m.target_type = @tt and m.target_spotify_id = @tsid
+                )
+                """, conn);
+            cmd.Parameters.AddWithValue("r", recipientId);
+            cmd.Parameters.AddWithValue("a", actorId);
+            cmd.Parameters.AddWithValue("tid", ratingId);
+            cmd.Parameters.AddWithValue("tt", targetType);
+            cmd.Parameters.AddWithValue("tsid", targetSpotifyId);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (NpgsqlException) { /* 알림 실패 무시 */ }
+    }
 }

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.RegularExpressions;
 using Api.Common;
 using Npgsql;
 using NpgsqlTypes;
@@ -11,6 +12,9 @@ namespace Api.Social;
 public static class CommentEndpoints
 {
     public const int MaxBodyLength = 1000;
+
+    // @핸들 파싱 — username 규칙(^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$)과 동일.
+    private static readonly Regex MentionPattern = new(@"@([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)", RegexOptions.Compiled);
 
     public sealed record CommentRequest(string? RatingId, string? ParentId, string? Body);
     public sealed record CommentItem(
@@ -93,13 +97,14 @@ public static class CommentEndpoints
 
                 await using var cmd = new NpgsqlCommand(
                     """
-                    with tgt as (select target_type, target_id from public.ratings where id = @rid),
+                    with tgt as (select target_type, target_id, target_spotify_id from public.ratings where id = @rid),
                     ins as (
                         insert into public.review_comments (rating_id, user_id, body, parent_id)
                         values (@rid, @uid, @body, @parent)
                         returning id, parent_id, user_id, body, created_at
                     )
-                    select ins.id, ins.parent_id, ins.user_id, u.username, u.avatar_url, ins.body, ins.created_at, cr.score::float8
+                    select ins.id, ins.parent_id, ins.user_id, u.username, u.avatar_url, ins.body, ins.created_at, cr.score::float8,
+                           tgt.target_type, tgt.target_spotify_id
                     from ins
                     join public.users u on u.id = ins.user_id
                     cross join tgt
@@ -112,12 +117,26 @@ public static class CommentEndpoints
                 cmd.Parameters.AddWithValue("body", body);
                 cmd.Parameters.Add(new NpgsqlParameter("parent", NpgsqlDbType.Uuid) { Value = (object?)parentId ?? DBNull.Value });
 
-                await using var r = await cmd.ExecuteReaderAsync();
-                await r.ReadAsync();
-                var item = new CommentItem(
-                    r.GetGuid(0).ToString(), r.IsDBNull(1) ? null : r.GetGuid(1).ToString(), r.GetGuid(2).ToString(),
-                    r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetString(5), r.GetFieldValue<DateTimeOffset>(6),
-                    0, false, r.IsDBNull(7) ? null : r.GetDouble(7), false);
+                CommentItem item;
+                string commentId;
+                string? targetType;
+                string? targetSpotifyId;
+                await using (var r = await cmd.ExecuteReaderAsync())
+                {
+                    await r.ReadAsync();
+                    commentId = r.GetGuid(0).ToString();
+                    targetType = r.IsDBNull(8) ? null : r.GetString(8);
+                    targetSpotifyId = r.IsDBNull(9) ? null : r.GetString(9);
+                    item = new CommentItem(
+                        commentId, r.IsDBNull(1) ? null : r.GetGuid(1).ToString(), r.GetGuid(2).ToString(),
+                        r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetString(5), r.GetFieldValue<DateTimeOffset>(6),
+                        0, false, r.IsDBNull(7) ? null : r.GetDouble(7), false);
+                }
+
+                // @멘션 알림 — 본문의 실존 유저에게 적재(대상 정보 있을 때만).
+                if (targetType is not null && targetSpotifyId is not null)
+                    await NotifyMentionsAsync(conn, body, uid, rid, targetType, targetSpotifyId);
+
                 return ApiResults.Created("CREATED", item);
             }
             catch (PostgresException ex) when (ex.SqlState == "23503") { return ApiResults.BadRequest("INVALID_TARGET"); }
@@ -182,6 +201,33 @@ public static class CommentEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+    }
+
+    // 본문에서 @핸들을 뽑아 실존 유저로 해석 → 각자에게 멘션 알림. self·설정off·대상뮤트는 헬퍼가 걸러냄.
+    private static async Task NotifyMentionsAsync(
+        NpgsqlConnection conn, string body, Guid actorId, Guid ratingId, string targetType, string targetSpotifyId)
+    {
+        var names = MentionPattern.Matches(body)
+            .Select(m => m.Groups[1].Value.ToLowerInvariant())
+            .Distinct()
+            .Take(10)
+            .ToArray();
+        if (names.Length == 0) return;
+
+        try
+        {
+            var recipients = new List<Guid>();
+            await using (var q = new NpgsqlCommand(
+                "select id from public.users where lower(username) = any(@names)", conn))
+            {
+                q.Parameters.Add(new NpgsqlParameter("names", names));
+                await using var rd = await q.ExecuteReaderAsync();
+                while (await rd.ReadAsync()) recipients.Add(rd.GetGuid(0));
+            }
+            foreach (var rid in recipients)
+                await Notifications.CreateMentionAsync(conn, rid, actorId, ratingId.ToString(), targetType, targetSpotifyId);
+        }
+        catch (NpgsqlException) { /* 멘션 알림 실패 무시 */ }
     }
 
     private static CommentItem Read(NpgsqlDataReader r) => new(

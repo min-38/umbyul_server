@@ -13,7 +13,7 @@ public static class NotificationEndpoints
 
     public sealed record NotificationList(IReadOnlyList<NotificationItem> Items, int UnreadCount);
 
-    public sealed record NotificationPrefs(bool Master, bool Follow, bool ReviewLike);
+    public sealed record NotificationPrefs(bool Master, bool Follow, bool ReviewLike, bool Mention);
 
     public static void MapNotificationEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -35,7 +35,7 @@ public static class NotificationEndpoints
                            u.username, u.avatar_url, r.target_type, r.target_spotify_id, n.detail
                     from public.notifications n
                     left join public.users u on u.id = n.actor_id
-                    left join public.ratings r on n.type in ('review_like', 'warning') and r.id::text = n.target_id and r.deleted_at is null
+                    left join public.ratings r on n.type in ('review_like', 'warning', 'mention') and r.id::text = n.target_id and r.deleted_at is null
                     where n.recipient_id = @me
                     order by n.created_at desc
                     limit 30
@@ -51,7 +51,7 @@ public static class NotificationEndpoints
                         {
                             "follow" => $"/u/{actor}",
                             // 리뷰로 딥링크: /{track|album}/{spotifyId}#review-{ratingId} (NON-60, 기존 앵커 관례)
-                            "review_like" or "warning" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}#review-{rd.GetString(2)}",
+                            "review_like" or "warning" or "mention" when !rd.IsDBNull(7) && !rd.IsDBNull(8) => $"/{rd.GetString(7)}/{rd.GetString(8)}#review-{rd.GetString(2)}",
                             _ => null,
                         };
                         items.Add(new NotificationItem(
@@ -144,15 +144,15 @@ public static class NotificationEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
-                    "select master, follow, review_like from public.notification_prefs where user_id = @me", conn);
+                    "select master, follow, review_like, mention from public.notification_prefs where user_id = @me", conn);
                 cmd.Parameters.AddWithValue("me", uid);
                 await using var rd = await cmd.ExecuteReaderAsync();
                 var prefs = await rd.ReadAsync()
-                    ? new NotificationPrefs(rd.GetBoolean(0), rd.GetBoolean(1), rd.GetBoolean(2))
-                    : new NotificationPrefs(true, true, true);
+                    ? new NotificationPrefs(rd.GetBoolean(0), rd.GetBoolean(1), rd.GetBoolean(2), rd.GetBoolean(3))
+                    : new NotificationPrefs(true, true, true, true);
                 return ApiResults.Ok("OK", prefs);
             }
-            catch (NpgsqlException) { return ApiResults.Ok("OK", new NotificationPrefs(true, true, true)); }
+            catch (NpgsqlException) { return ApiResults.Ok("OK", new NotificationPrefs(true, true, true, true)); }
         });
 
         // 알림 설정 저장(upsert)
@@ -166,15 +166,16 @@ public static class NotificationEndpoints
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
                     """
-                    insert into public.notification_prefs (user_id, master, follow, review_like, updated_at)
-                    values (@me, @m, @f, @rl, now())
+                    insert into public.notification_prefs (user_id, master, follow, review_like, mention, updated_at)
+                    values (@me, @m, @f, @rl, @mn, now())
                     on conflict (user_id) do update
-                        set master = @m, follow = @f, review_like = @rl, updated_at = now()
+                        set master = @m, follow = @f, review_like = @rl, mention = @mn, updated_at = now()
                     """, conn);
                 cmd.Parameters.AddWithValue("me", uid);
                 cmd.Parameters.AddWithValue("m", req.Master);
                 cmd.Parameters.AddWithValue("f", req.Follow);
                 cmd.Parameters.AddWithValue("rl", req.ReviewLike);
+                cmd.Parameters.AddWithValue("mn", req.Mention);
                 await cmd.ExecuteNonQueryAsync();
                 return ApiResults.Ok("OK");
             }
