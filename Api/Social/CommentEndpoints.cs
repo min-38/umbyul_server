@@ -1,25 +1,30 @@
 using System.Security.Claims;
 using Api.Common;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace Api.Social;
 
-/// 리뷰 댓글 (NON-36). 열람은 공개, 작성/삭제는 로그인. 본인 댓글만 삭제.
+/// 리뷰 댓글 + 대댓글 (NON-36/40). 열람 공개, 작성/삭제/좋아요는 로그인.
+/// 2레벨 flatten(답글의 답글도 최상위 댓글에 평평하게, @멘션으로 대상 표시). 댓글 좋아요만(싫어요 없음).
+/// 각 댓글에 작성자가 그 대상(곡/앨범)에 매긴 별점 동봉(없으면 null=평가 없음). 신고는 /me/reports(target_type=comment).
 public static class CommentEndpoints
 {
     public const int MaxBodyLength = 1000;
 
-    public sealed record CommentRequest(string? RatingId, string? Body);
+    public sealed record CommentRequest(string? RatingId, string? ParentId, string? Body);
     public sealed record CommentItem(
-        string Id, string UserId, string Username, string? AvatarUrl, string Body, DateTimeOffset CreatedAt);
+        string Id, string? ParentId, string UserId, string Username, string? AvatarUrl,
+        string? Body, DateTimeOffset CreatedAt, int LikeCount, bool LikedByMe, double? Score, bool Deleted);
 
     public static void MapCommentEndpoints(this WebApplication app, string? dbConnString)
     {
-        // 공개: 리뷰의 댓글 목록(오래된 순). 상세가 비로그인 열람이라 인증 불필요.
-        app.MapGet("/detail/comments/{ratingId}", async (string ratingId) =>
+        // 공개(옵셔널 인증): 리뷰의 댓글+대댓글 목록(오래된 순). 로그인 시 내 좋아요 포함.
+        app.MapGet("/detail/comments/{ratingId}", async (string ratingId, ClaimsPrincipal user) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (!Guid.TryParse(ratingId, out var rid)) return ApiResults.BadRequest("INVALID_TARGET");
+            var me = Sub(user);
 
             try
             {
@@ -27,20 +32,31 @@ public static class CommentEndpoints
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
                     """
-                    select c.id, c.user_id, u.username, u.avatar_url, c.body, c.created_at
+                    with tgt as (select target_type, target_id from public.ratings where id = @rid)
+                    select c.id, c.parent_id, c.user_id, u.username, u.avatar_url,
+                           case when c.deleted_at is null then c.body else null end as body,
+                           c.created_at,
+                           (select count(*) from public.comment_likes cl where cl.comment_id = c.id)::int as like_count,
+                           (@me is not null and exists (select 1 from public.comment_likes cl where cl.comment_id = c.id and cl.user_id = @me)) as liked,
+                           cr.score::float8 as score,
+                           (c.deleted_at is not null) as deleted
                     from public.review_comments c
                     join public.users u on u.id = c.user_id
+                    cross join tgt
+                    left join public.ratings cr
+                        on cr.user_id = c.user_id and cr.target_type = tgt.target_type
+                       and cr.target_id = tgt.target_id and cr.deleted_at is null
                     where c.rating_id = @rid
+                      and (c.deleted_at is null
+                           or exists (select 1 from public.review_comments ch where ch.parent_id = c.id and ch.deleted_at is null))
                     order by c.created_at asc
                     """, conn);
                 cmd.Parameters.AddWithValue("rid", rid);
+                cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
 
                 var items = new List<CommentItem>();
                 await using var r = await cmd.ExecuteReaderAsync();
-                while (await r.ReadAsync())
-                    items.Add(new CommentItem(
-                        r.GetGuid(0).ToString(), r.GetGuid(1).ToString(), r.GetString(2),
-                        r.IsDBNull(3) ? null : r.GetString(3), r.GetString(4), r.GetFieldValue<DateTimeOffset>(5)));
+                while (await r.ReadAsync()) items.Add(Read(r));
                 return ApiResults.Ok("OK", new { items });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -48,7 +64,7 @@ public static class CommentEndpoints
 
         var me = app.MapGroup("/me").RequireAuthorization();
 
-        // 댓글 작성 → 생성된 댓글(작성자 정보 포함) 반환
+        // 댓글/대댓글 작성. parentId 있으면 대댓글 — 2레벨 flatten(부모가 대댓글이면 그 최상위 조상으로 승격).
         me.MapPost("/comments", async (CommentRequest req, ClaimsPrincipal user) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
@@ -62,31 +78,91 @@ public static class CommentEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
                 if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
+
+                Guid? parentId = null;
+                if (!string.IsNullOrWhiteSpace(req.ParentId))
+                {
+                    if (!Guid.TryParse(req.ParentId, out var pid)) return ApiResults.BadRequest("INVALID_TARGET");
+                    await using var pcmd = new NpgsqlCommand(
+                        "select coalesce(parent_id, id) from public.review_comments where id = @pid and rating_id = @rid and deleted_at is null", conn);
+                    pcmd.Parameters.AddWithValue("pid", pid);
+                    pcmd.Parameters.AddWithValue("rid", rid);
+                    if (await pcmd.ExecuteScalarAsync() is not Guid ancestor) return ApiResults.BadRequest("INVALID_TARGET");
+                    parentId = ancestor;
+                }
+
                 await using var cmd = new NpgsqlCommand(
                     """
-                    with ins as (
-                        insert into public.review_comments (rating_id, user_id, body)
-                        values (@rid, @uid, @body)
-                        returning id, user_id, body, created_at
+                    with tgt as (select target_type, target_id from public.ratings where id = @rid),
+                    ins as (
+                        insert into public.review_comments (rating_id, user_id, body, parent_id)
+                        values (@rid, @uid, @body, @parent)
+                        returning id, parent_id, user_id, body, created_at
                     )
-                    select ins.id, ins.user_id, u.username, u.avatar_url, ins.body, ins.created_at
-                    from ins join public.users u on u.id = ins.user_id
+                    select ins.id, ins.parent_id, ins.user_id, u.username, u.avatar_url, ins.body, ins.created_at, cr.score::float8
+                    from ins
+                    join public.users u on u.id = ins.user_id
+                    cross join tgt
+                    left join public.ratings cr
+                        on cr.user_id = ins.user_id and cr.target_type = tgt.target_type
+                       and cr.target_id = tgt.target_id and cr.deleted_at is null
                     """, conn);
                 cmd.Parameters.AddWithValue("rid", rid);
                 cmd.Parameters.AddWithValue("uid", uid);
                 cmd.Parameters.AddWithValue("body", body);
+                cmd.Parameters.Add(new NpgsqlParameter("parent", NpgsqlDbType.Uuid) { Value = (object?)parentId ?? DBNull.Value });
+
                 await using var r = await cmd.ExecuteReaderAsync();
                 await r.ReadAsync();
                 var item = new CommentItem(
-                    r.GetGuid(0).ToString(), r.GetGuid(1).ToString(), r.GetString(2),
-                    r.IsDBNull(3) ? null : r.GetString(3), r.GetString(4), r.GetFieldValue<DateTimeOffset>(5));
+                    r.GetGuid(0).ToString(), r.IsDBNull(1) ? null : r.GetGuid(1).ToString(), r.GetGuid(2).ToString(),
+                    r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetString(5), r.GetFieldValue<DateTimeOffset>(6),
+                    0, false, r.IsDBNull(7) ? null : r.GetDouble(7), false);
                 return ApiResults.Created("CREATED", item);
             }
             catch (PostgresException ex) when (ex.SqlState == "23503") { return ApiResults.BadRequest("INVALID_TARGET"); }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 
-        // 댓글 삭제 — 본인 것만
+        // 댓글 좋아요 토글(좋아요만). 반환 { liked, likeCount }.
+        me.MapPost("/comments/{id}/like", async (string id, ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            if (!Guid.TryParse(id, out var cid)) return ApiResults.BadRequest("INVALID_TARGET");
+
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
+
+                bool liked;
+                await using (var del = new NpgsqlCommand(
+                    "delete from public.comment_likes where comment_id = @cid and user_id = @uid", conn))
+                {
+                    del.Parameters.AddWithValue("cid", cid);
+                    del.Parameters.AddWithValue("uid", uid);
+                    liked = await del.ExecuteNonQueryAsync() == 0; // 지운 게 없으면 새로 좋아요
+                }
+                if (liked)
+                {
+                    await using var ins = new NpgsqlCommand(
+                        "insert into public.comment_likes (comment_id, user_id) values (@cid, @uid) on conflict do nothing", conn);
+                    ins.Parameters.AddWithValue("cid", cid);
+                    ins.Parameters.AddWithValue("uid", uid);
+                    await ins.ExecuteNonQueryAsync();
+                }
+                await using var cnt = new NpgsqlCommand("select count(*)::int from public.comment_likes where comment_id = @cid", conn);
+                cnt.Parameters.AddWithValue("cid", cid);
+                var likeCount = (int)(await cnt.ExecuteScalarAsync())!;
+                return ApiResults.Ok("OK", new { liked, likeCount });
+            }
+            catch (PostgresException ex) when (ex.SqlState == "23503") { return ApiResults.BadRequest("INVALID_TARGET"); }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
+        // 댓글 삭제 — 본인 것만. 소프트삭제(대댓글 스레드 보존 → 목록에선 답글 있을 때만 "삭제됨"으로 노출).
         me.MapDelete("/comments/{id}", async (string id, ClaimsPrincipal user) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
@@ -98,7 +174,7 @@ public static class CommentEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
                 await using var cmd = new NpgsqlCommand(
-                    "delete from public.review_comments where id = @cid and user_id = @uid", conn);
+                    "update public.review_comments set deleted_at = now(), deleted_by = @uid where id = @cid and user_id = @uid and deleted_at is null", conn);
                 cmd.Parameters.AddWithValue("cid", cid);
                 cmd.Parameters.AddWithValue("uid", uid);
                 if (await cmd.ExecuteNonQueryAsync() == 0) return ApiResults.NotFound("COMMENT_NOT_FOUND");
@@ -107,6 +183,19 @@ public static class CommentEndpoints
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
     }
+
+    private static CommentItem Read(NpgsqlDataReader r) => new(
+        r.GetGuid(0).ToString(),
+        r.IsDBNull(1) ? null : r.GetGuid(1).ToString(),
+        r.GetGuid(2).ToString(),
+        r.GetString(3),
+        r.IsDBNull(4) ? null : r.GetString(4),
+        r.IsDBNull(5) ? null : r.GetString(5),
+        r.GetFieldValue<DateTimeOffset>(6),
+        r.GetInt32(7),
+        r.GetBoolean(8),
+        r.IsDBNull(9) ? null : r.GetDouble(9),
+        r.GetBoolean(10));
 
     private static Guid? Sub(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;

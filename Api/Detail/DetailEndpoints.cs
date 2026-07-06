@@ -121,7 +121,7 @@ public static class DetailEndpoints
                        count(re.id) filter (where re.value = 'like')    as likes,
                        count(re.id) filter (where re.value = 'dislike') as dislikes,
                        max(case when re.user_id = @me then re.value end) as my_reaction,
-                       (select count(*) from public.review_comments c where c.rating_id = r.id) as comments
+                       (select count(*) from public.review_comments c where c.rating_id = r.id and c.deleted_at is null) as comments
                 from public.ratings r
                 join public.users u on u.id = r.user_id
                 left join public.review_reactions re on re.rating_id = r.id
