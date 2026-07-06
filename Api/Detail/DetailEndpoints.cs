@@ -11,6 +11,10 @@ namespace Api.Detail;
 /// 장르는 앱 토큰으로 안 내려와 제외(실측). 레이블은 앨범 copyrights로 대체.
 public static class DetailEndpoints
 {
+    // 앱 토큰은 market 없이는 explicit 를 항상 false(=unknown)로 준다(실측). KR 시장 붙이면 정확.
+    // id/ISRC 는 relinking 없이 유지됨(실측) — 평점 키 안 흔들림. (BUG-14)
+    private const string Market = "KR";
+
     public static void MapDetailEndpoints(this WebApplication app, string? dbConnString)
     {
         app.MapGet("/detail/track/{id}", async (string id, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
@@ -18,7 +22,7 @@ public static class DetailEndpoints
             if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
 
             string? json;
-            try { json = await spotify.GetAsync($"tracks/{id}", ct); }
+            try { json = await spotify.GetAsync($"tracks/{id}?market={Market}", ct); }
             catch (HttpRequestException) { return ApiResults.ServiceUnavailable("SPOTIFY_UNAVAILABLE"); }
             if (json is null) return ApiResults.NotFound("TRACK_NOT_FOUND");
 
@@ -32,7 +36,7 @@ public static class DetailEndpoints
 
             return ApiResults.Ok("OK", new TrackDetail(
                 t.SpotifyId, t.Name, t.SpotifyUrl, t.Artists, t.Album, t.Isrc, targetId, t.DurationMs,
-                t.ReleaseDate, copyright, summary, reviews));
+                t.ReleaseDate, copyright, t.Explicit, summary, reviews));
         });
 
         app.MapGet("/detail/album/{id}", async (string id, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
@@ -40,7 +44,7 @@ public static class DetailEndpoints
             if (!spotify.Configured) return ApiResults.ServiceUnavailable("SPOTIFY_NOT_CONFIGURED");
 
             string? json;
-            try { json = await spotify.GetAsync($"albums/{id}", ct); }
+            try { json = await spotify.GetAsync($"albums/{id}?market={Market}", ct); }
             catch (HttpRequestException) { return ApiResults.ServiceUnavailable("SPOTIFY_UNAVAILABLE"); }
             if (json is null) return ApiResults.NotFound("ALBUM_NOT_FOUND");
 

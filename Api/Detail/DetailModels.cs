@@ -6,7 +6,7 @@ public sealed record ArtistRef(string Id, string Name);
 
 public sealed record AlbumRef(string Id, string Name, string? ImageUrl);
 
-public sealed record TrackRef(string Id, string Name, int DurationMs, int TrackNumber, RatingSummary? Rating = null);
+public sealed record TrackRef(string Id, string Name, int DurationMs, int TrackNumber, bool Explicit = false, RatingSummary? Rating = null);
 
 public sealed record RatingSummary(double? Average, int Count);
 
@@ -37,6 +37,7 @@ public sealed record TrackDetail(
     int DurationMs,
     string? ReleaseDate,
     string? Copyright,
+    bool Explicit,
     RatingSummary Rating,
     IReadOnlyList<ReviewItem> Reviews);
 

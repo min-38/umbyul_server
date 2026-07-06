@@ -9,7 +9,7 @@ public static class DetailParse
     public sealed record ParsedTrack(
         string SpotifyId, string Name, string SpotifyUrl,
         IReadOnlyList<ArtistRef> Artists, AlbumRef? Album,
-        string? Isrc, int DurationMs, string? ReleaseDate, string? AlbumId);
+        string? Isrc, int DurationMs, string? ReleaseDate, string? AlbumId, bool Explicit);
 
     public sealed record ParsedAlbum(
         string SpotifyId, string Name, string SpotifyUrl,
@@ -40,7 +40,8 @@ public static class DetailParse
             isrc,
             Int(root, "duration_ms"),
             releaseDate,
-            albumId);
+            albumId,
+            Bool(root, "explicit"));
     }
 
     public static ParsedAlbum Album(JsonElement root)
@@ -55,7 +56,7 @@ public static class DetailParse
             foreach (var it in items.EnumerateArray())
                 tracks.Add(new TrackRef(
                     Str(it, "id") ?? "", Str(it, "name") ?? "",
-                    Int(it, "duration_ms"), Int(it, "track_number")));
+                    Int(it, "duration_ms"), Int(it, "track_number"), Bool(it, "explicit")));
         }
 
         return new ParsedAlbum(
@@ -109,6 +110,9 @@ public static class DetailParse
 
     private static int Int(JsonElement el, string prop) =>
         el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
+
+    private static bool Bool(JsonElement el, string prop) =>
+        el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.True;
 
     private static string? Str(JsonElement el, string prop) =>
         el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
