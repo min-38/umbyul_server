@@ -53,7 +53,8 @@ public static class FeedEndpoints
                       select r.id, r.user_id, u.username, u.avatar_url, r.target_type, r.target_spotify_id,
                              r.score, r.review, r.created_at, r.target_name, r.target_artist, r.target_image_url, r.target_artists,
                              coalesce(rx.likes, 0) likes, coalesce(rx.dislikes, 0) dislikes, coalesce(rx.recent, 0) recent,
-                             (select re.value from public.review_reactions re where re.rating_id = r.id and re.user_id = @me limit 1) my_reaction
+                             (select re.value from public.review_reactions re where re.rating_id = r.id and re.user_id = @me limit 1) my_reaction,
+                             (select count(*) from public.review_comments c where c.rating_id = r.id and c.deleted_at is null) comment_count
                       from public.ratings r
                       join public.users u on u.id = r.user_id
                       left join rx on rx.rating_id = r.id
@@ -63,7 +64,7 @@ public static class FeedEndpoints
                     )
                     select id, user_id, username, avatar_url, target_type, target_spotify_id,
                            score, review, created_at, target_name, target_artist, target_image_url, target_artists,
-                           likes, dislikes, my_reaction,
+                           likes, dislikes, my_reaction, comment_count,
                            (log(greatest(abs(likes - dislikes), 1))
                              + sign(likes - dislikes) * extract(epoch from created_at) / 45000.0) hot,
                            (case when likes + dislikes = 0 then 0 else
@@ -91,7 +92,8 @@ public static class FeedEndpoints
                         rd.IsDBNull(11) ? null : rd.GetString(11),
                         rd.IsDBNull(12) ? null : ParseArtists(rd.GetString(12)),
                         (int)rd.GetInt64(13), (int)rd.GetInt64(14),
-                        rd.IsDBNull(15) ? null : rd.GetString(15)));
+                        rd.IsDBNull(15) ? null : rd.GetString(15),
+                        (int)rd.GetInt64(16)));
                 return ApiResults.Ok("OK", new FeedData(list));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -142,5 +144,5 @@ public sealed record FeedItem(
     string Id, string UserId, string Username, string? AvatarUrl,
     string TargetType, string TargetSpotifyId, decimal Score, string Body, DateTimeOffset CreatedAt,
     string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists,
-    int Likes, int Dislikes, string? MyReaction);
+    int Likes, int Dislikes, string? MyReaction, int CommentCount);
 public sealed record FeedData(IReadOnlyList<FeedItem> Items);
