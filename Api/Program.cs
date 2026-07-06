@@ -15,6 +15,7 @@ using Api.Legal;
 using Api.Profile;
 using Api.Ratings;
 using Api.Search;
+using Api.Sets;
 using Api.Social;
 using Api.Spotify;
 using Api.Storage;
@@ -230,6 +231,9 @@ app.MapCommentEndpoints(dbConnString);
 
 // 댓글 @멘션 (/users/search 자동완성, /me/mention-mute 뮤트) — NON-131
 app.MapMentionEndpoints(dbConnString);
+
+// DJ 세트 (/sets, /me/sets, 스포티파이 플리 임포트) — NON-133
+app.MapSetEndpoints(dbConnString);
 
 // 팔로우 (/me/follows, /users/{username}/followers·following) — NON-25
 app.MapFollowEndpoints(dbConnString);

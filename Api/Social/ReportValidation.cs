@@ -5,7 +5,7 @@ public static class ReportValidation
 {
     public const int MaxDetailLength = 1000;
 
-    public static bool IsTargetType(string? t) => t is "rating" or "user" or "comment";
+    public static bool IsTargetType(string? t) => t is "rating" or "user" or "comment" or "set_comment";
 
     public static bool IsReason(string? r) =>
         r is "not_music" or "inappropriate_profile" or "abuse" or "other";
