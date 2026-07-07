@@ -7,11 +7,17 @@ public class ReportValidationTests
     [Theory]
     [InlineData("rating")]
     [InlineData("user")]
-    public void IsTargetType_accepts_rating_user(string t) =>
+    [InlineData("comment")]
+    [InlineData("set_comment")]
+    [InlineData("set")]
+    public void IsTargetType_accepts_all_known(string t) =>
         Assert.True(ReportValidation.IsTargetType(t));
 
     [Theory]
     [InlineData("track")]
+    [InlineData("album")]
+    [InlineData("Rating")] // 대소문자 구분
+    [InlineData("set ")] // 뒤 공백 미허용
     [InlineData("")]
     [InlineData(null)]
     public void IsTargetType_rejects_others(string? t) =>
