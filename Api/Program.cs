@@ -9,7 +9,6 @@ using Api.Discover;
 using Api.Faq;
 using Api.Feed;
 using Api.Genre;
-using Api.Home;
 using Api.Inquiry;
 using Api.Legal;
 using Api.Profile;
@@ -197,25 +196,6 @@ app.MapGet("/health/db", async () =>
     }
 });
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
-
 // 프로필 조회·프로비저닝 (/me/profile, /me/username-available)
 app.MapProfileEndpoints(dbConnString);
 
@@ -265,10 +245,7 @@ app.MapNotificationEndpoints(dbConnString);
 // 계정 설정 (/me/avatar, /me/username, /me/account, /media/avatar) — NON-30
 app.MapAccountEndpoints(dbConnString);
 
-// 홈 피드 (/home) — 공개(옵셔널 인증), DB만 조회 (NON-43)
-app.MapHomeEndpoints(dbConnString);
-
-// 홈 피드 v2 (/feed) — 공개(옵셔널 인증), Reddit식 정렬 + 반응 집계 (NON-88)
+// 홈 피드 (/feed) — 공개(옵셔널 인증), Reddit식 정렬 + 반응 집계 (NON-88)
 app.MapFeedEndpoints(dbConnString);
 
 // Discover (/discover) — 공개, DB만 조회: 신규·급상승 (NON-81)
@@ -287,8 +264,3 @@ app.MapFaqEndpoints(dbConnString);
 app.MapInquiryEndpoints(dbConnString);
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
