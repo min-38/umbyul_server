@@ -76,9 +76,12 @@ else
     <div class="card" style="max-width:520px">
         <div class="card-body">
             <h6 class="card-title text-muted mb-3">내 비밀번호 변경</h6>
-            <div class="d-flex gap-2">
-                <input class="form-control form-control-sm" type="password" placeholder="새 비밀번호(8자+)" @bind="myNewPass" />
-                <button class="btn btn-sm btn-primary text-nowrap" @onclick="ChangePassword" disabled="@Busy">변경</button>
+            <div class="d-flex flex-column gap-2" style="max-width:300px">
+                <input class="form-control form-control-sm" type="password" placeholder="현재 비밀번호" @bind="myCurPass" />
+                <div class="d-flex gap-2">
+                    <input class="form-control form-control-sm" type="password" placeholder="새 비밀번호(8자+)" @bind="myNewPass" />
+                    <button class="btn btn-sm btn-primary text-nowrap" @onclick="ChangePassword" disabled="@Busy">변경</button>
+                </div>
             </div>
             @if (pwMsg is not null)
             {
@@ -95,6 +98,7 @@ else
     private string? msg;
     private bool ok;
     private Guid? myId;
+    private string myCurPass = "";
     private string myNewPass = "";
     private string? pwMsg;
     private bool pwOk;
@@ -121,12 +125,14 @@ else
     private async Task ChangePassword()
     {
         pwMsg = null;
+        if (myCurPass.Length == 0) { pwOk = false; pwMsg = "현재 비밀번호를 입력하세요."; return; }
         if (myNewPass.Length < 8) { pwOk = false; pwMsg = "비밀번호는 8자 이상."; return; }
         if (myId is not { } id) { pwOk = false; pwMsg = "세션을 확인할 수 없습니다."; return; }
         await RunAsync(async () =>
         {
-            await Db.ChangeAdminPasswordAsync(id, BCrypt.Net.BCrypt.HashPassword(myNewPass), await CurrentActor());
-            pwOk = true; pwMsg = "변경되었습니다."; myNewPass = "";
+            var changed = await Db.ChangeAdminPasswordAsync(id, myCurPass, BCrypt.Net.BCrypt.HashPassword(myNewPass), await CurrentActor());
+            if (changed) { pwOk = true; pwMsg = "변경되었습니다."; myNewPass = ""; myCurPass = ""; }
+            else { pwOk = false; pwMsg = "현재 비밀번호가 올바르지 않습니다."; }
         });
     }
 

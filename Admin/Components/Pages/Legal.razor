@@ -231,7 +231,7 @@ else
         msg = "이전 버전을 편집기에 불러왔습니다 (게시해야 공개 반영).";
     }
 
-    private string PreviewHtml => Markdig.Markdown.ToHtml(content ?? "");
+    private string PreviewHtml => Admin.Services.SafeMarkdown.ToHtml(content);
 
     private static string TypeLabel(string t) => t == "terms" ? "이용약관" : "개인정보";
 

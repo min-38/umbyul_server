@@ -186,7 +186,7 @@ else
     // 저장 후 목록만 갱신(편집기 유지).
     private async Task LoadKeepEditor() => items = await Db.ListFaqAsync(locale);
 
-    private string PreviewHtml => Markdig.Markdown.ToHtml(answer ?? "");
+    private string PreviewHtml => Admin.Services.SafeMarkdown.ToHtml(answer);
 
     private async Task<Actor> CurrentActor()
     {

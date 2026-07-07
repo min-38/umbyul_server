@@ -43,6 +43,21 @@ public sealed partial class AdminDb(IConfiguration config)
         return (r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetBoolean(3));
     }
 
+    /// 관리자 활성 여부(세션 재검증용, ADM-1). 행 없음(삭제) = 비활성 취급.
+    /// 조회 실패(컬럼 미존재 등)는 true(가용성 우선) — is_active 는 0033 이후 존재.
+    public async Task<bool> IsAdminActiveAsync(Guid id, CancellationToken ct = default)
+    {
+        if (!Configured) return true;
+        try
+        {
+            await using var conn = await OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand("select is_active from public.admins where id = @id", conn);
+            cmd.Parameters.AddWithValue("id", id);
+            return await cmd.ExecuteScalarAsync(ct) is true;
+        }
+        catch (NpgsqlException) { return true; }
+    }
+
     /// 부트스트랩: 해당 username이 없으면 생성(있으면 그대로 둠). 첫 관리자 시딩용.
     /// 마이그레이션(0016) 전이면 조용히 스킵(앱 기동은 막지 않음).
     public async Task EnsureBootstrapAdminAsync(string username, string passwordHash, CancellationToken ct = default)
@@ -99,28 +114,42 @@ public sealed partial class AdminDb(IConfiguration config)
     {
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
         await using var conn = await OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
 
         if (!active)
         {
-            await using var cntCmd = new NpgsqlCommand("select count(*) from public.admins where is_active", conn);
-            if ((long)(await cntCmd.ExecuteScalarAsync(ct))! <= 1) return (false, "LAST_ADMIN");
+            // 대상을 제외한 활성 관리자 행을 잠가 동시 비활성화 경합(TOCTOU) 방지 — 남는 활성이 0이면 거부(ADM-10).
+            await using var cntCmd = new NpgsqlCommand(
+                "select count(*) from (select 1 from public.admins where is_active and id <> @id for update) x", conn, tx);
+            cntCmd.Parameters.AddWithValue("id", id);
+            if ((long)(await cntCmd.ExecuteScalarAsync(ct))! < 1) return (false, "LAST_ADMIN");
         }
 
-        await using (var cmd = new NpgsqlCommand("update public.admins set is_active = @a where id = @id", conn))
+        await using (var cmd = new NpgsqlCommand("update public.admins set is_active = @a where id = @id", conn, tx))
         {
             cmd.Parameters.AddWithValue("a", active);
             cmd.Parameters.AddWithValue("id", id);
             if (await cmd.ExecuteNonQueryAsync(ct) == 0) return (false, "NOT_FOUND");
         }
+        await tx.CommitAsync(ct);
         await LogAsync(conn, actor, active ? "admin.activate" : "admin.deactivate", id.ToString(), null, ct);
         return (true, null);
     }
 
-    /// 본인 비밀번호 변경(BCrypt 재해시는 호출부에서). 감사 로그 admin.password_change.
-    public async Task ChangeAdminPasswordAsync(Guid id, string newHash, Actor actor, CancellationToken ct = default)
+    /// 본인 비밀번호 변경(ADM-4). 현재 비번을 먼저 검증 → 세션 탈취만으로 계정 탈취되는 것 차단.
+    /// 반환: false = 현재 비번 불일치(또는 계정 없음). 감사 로그 admin.password_change.
+    public async Task<bool> ChangeAdminPasswordAsync(Guid id, string currentPassword, string newHash, Actor actor, CancellationToken ct = default)
     {
-        if (!Configured) return;
+        if (!Configured) return false;
         await using var conn = await OpenAsync(ct);
+        string currentHash;
+        await using (var sel = new NpgsqlCommand("select password_hash from public.admins where id = @id", conn))
+        {
+            sel.Parameters.AddWithValue("id", id);
+            if (await sel.ExecuteScalarAsync(ct) is not string h) return false;
+            currentHash = h;
+        }
+        if (!BCrypt.Net.BCrypt.Verify(currentPassword, currentHash)) return false;
         await using (var cmd = new NpgsqlCommand("update public.admins set password_hash = @h where id = @id", conn))
         {
             cmd.Parameters.AddWithValue("h", newHash);
@@ -128,6 +157,7 @@ public sealed partial class AdminDb(IConfiguration config)
             await cmd.ExecuteNonQueryAsync(ct);
         }
         await LogAsync(conn, actor, "admin.password_change", id.ToString(), null, ct);
+        return true;
     }
 
     // ── 감사 로그 ──
