@@ -14,6 +14,9 @@ public static class ChartEndpoints
 {
     private const int M = 5;     // 베이지안 가중치(신뢰 붙기 시작하는 평가 수) — 튜닝값
     private const int MinV = 1;  // 차트 노출 최소 평가 수
+    // 성별·나이대 필터가 걸리면 소수 N 에서 개인의 성별/나이가 드러날 수 있어(재식별) 노출 임계를 올림 —
+    // k-익명성(k=5). 예: "여성·20대" 필터에서 1명만 평가한 곡이 노출되면 그 1명이 특정됨 (LEG-10).
+    private const int MinDemographicV = 5;
 
     public static void MapChartEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -49,6 +52,8 @@ public static class ChartEndpoints
             var filters = $"{typeClause} {interval} {genderClause} {ageClause}";
             // 아티스트: 타입 무관, target_artists 있는 것만. 나머지 필터는 동일.
             var artistFilters = $"{interval} {genderClause} {ageClause} and r.target_artists is not null";
+            // 인구통계 필터(성별·나이) 활성 시 재식별 방지 위해 노출 임계 상향(LEG-10).
+            var minv = g is not null || ageClause.Length > 0 ? MinDemographicV : MinV;
 
             try
             {
@@ -56,7 +61,7 @@ public static class ChartEndpoints
                 await conn.OpenAsync(ct);
 
                 if (isArtist)
-                    return await LoadArtistChartAsync(conn, artistFilters, sort, g, off, lim, ct);
+                    return await LoadArtistChartAsync(conn, artistFilters, sort, g, minv, off, lim, ct);
 
                 await using var cmd = new NpgsqlCommand(
                     $"""
@@ -83,7 +88,7 @@ public static class ChartEndpoints
                     limit @lim offset @off
                     """, conn);
                 cmd.Parameters.AddWithValue("m", M);
-                cmd.Parameters.AddWithValue("minv", MinV);
+                cmd.Parameters.AddWithValue("minv", minv);
                 cmd.Parameters.AddWithValue("lim", lim);
                 cmd.Parameters.AddWithValue("off", off);
                 if (t is not null) cmd.Parameters.AddWithValue("type", t);
@@ -183,7 +188,7 @@ public static class ChartEndpoints
 
     // 아티스트 차트(NON-87): 앨범/곡 평가를 target_artists 로 펼쳐 아티스트별 집계. 커버 없음.
     private static async Task<IResult> LoadArtistChartAsync(
-        NpgsqlConnection conn, string filters, string? sort, string? gender, int off, int lim, CancellationToken ct)
+        NpgsqlConnection conn, string filters, string? sort, string? gender, int minv, int off, int lim, CancellationToken ct)
     {
         var orderBy = (sort == "most" ? "v desc, wr desc" : "wr desc, v desc") + ", b.aid";
         await using var cmd = new NpgsqlCommand(
@@ -211,7 +216,7 @@ public static class ChartEndpoints
             limit @lim offset @off
             """, conn);
         cmd.Parameters.AddWithValue("m", M);
-        cmd.Parameters.AddWithValue("minv", MinV);
+        cmd.Parameters.AddWithValue("minv", minv);
         cmd.Parameters.AddWithValue("lim", lim);
         cmd.Parameters.AddWithValue("off", off);
         if (gender is not null) cmd.Parameters.AddWithValue("gender", gender);
