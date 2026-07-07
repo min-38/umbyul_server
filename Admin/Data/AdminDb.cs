@@ -30,6 +30,9 @@ public sealed partial class AdminDb(IConfiguration config)
         return conn;
     }
 
+    // ILIKE 와일드카드(%, _)를 리터럴로 이스케이프(기본 escape 문자 '\') — 검색어 특수문자가 패턴으로 동작하는 것 방지(ADM-13).
+    internal static string LikeEscape(string s) => s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+
     // ── 관리자 계정 ──
     public async Task<(Guid Id, string Username, string Hash, bool IsActive)?> GetAdminAuthAsync(string username, CancellationToken ct = default)
     {
@@ -168,13 +171,14 @@ public sealed partial class AdminDb(IConfiguration config)
         await LogAsync(conn, actor, action, target, detail, ct);
     }
 
-    private static async Task LogAsync(NpgsqlConnection conn, Actor actor, string action, string? target, string? detail, CancellationToken ct)
+    // 활성 트랜잭션이 있으면 그 안에서 기록(감사 로그를 본 조치와 원자적으로 — ADM-12). tx=null 이면 단독 커맨드.
+    private static async Task LogAsync(NpgsqlConnection conn, Actor actor, string action, string? target, string? detail, CancellationToken ct, NpgsqlTransaction? tx = null)
     {
         await using var cmd = new NpgsqlCommand(
             """
             insert into public.admin_actions (admin_id, admin_username, action, target, detail)
             values (@id, @u, @a, @t, @d)
-            """, conn);
+            """, conn, tx);
         cmd.Parameters.AddWithValue("id", (object?)actor.Id ?? DBNull.Value);
         cmd.Parameters.AddWithValue("u", actor.Username);
         cmd.Parameters.AddWithValue("a", action);
@@ -197,8 +201,8 @@ public sealed partial class AdminDb(IConfiguration config)
               and (@since is null or created_at >= @since)
             order by created_at desc limit @lim offset @off
             """, conn);
-        cmd.Parameters.AddWithValue("action", action ?? "");
-        cmd.Parameters.AddWithValue("admin", admin ?? "");
+        cmd.Parameters.AddWithValue("action", LikeEscape(action ?? ""));
+        cmd.Parameters.AddWithValue("admin", LikeEscape(admin ?? ""));
         // nullable 시각은 명시적 타입으로(무타입 DBNull은 Postgres 파라미터 타입 추론 실패 위험).
         cmd.Parameters.Add(new NpgsqlParameter("since", NpgsqlTypes.NpgsqlDbType.TimestampTz) { Value = (object?)since ?? DBNull.Value });
         cmd.Parameters.AddWithValue("lim", limit);

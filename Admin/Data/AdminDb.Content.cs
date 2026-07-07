@@ -206,7 +206,7 @@ public sealed partial class AdminDb
             """, conn);
         cmd.Parameters.AddWithValue("all", handled is null);
         cmd.Parameters.AddWithValue("h", handled ?? false);
-        cmd.Parameters.AddWithValue("q", search ?? "");
+        cmd.Parameters.AddWithValue("q", LikeEscape(search ?? ""));
         cmd.Parameters.AddWithValue("cat", category ?? "");
         cmd.Parameters.AddWithValue("lim", limit);
         cmd.Parameters.AddWithValue("off", offset);

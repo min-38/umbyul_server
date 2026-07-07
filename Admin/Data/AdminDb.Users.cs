@@ -25,7 +25,7 @@ public sealed partial class AdminDb
             order by (u.banned or u.suspended_until > now()) desc, u.created_at desc
             limit @lim offset @off
             """, conn);
-        cmd.Parameters.AddWithValue("q", search ?? "");
+        cmd.Parameters.AddWithValue("q", LikeEscape(search ?? ""));
         cmd.Parameters.AddWithValue("lim", limit);
         cmd.Parameters.AddWithValue("off", offset);
         var list = new List<UserRow>();
@@ -129,10 +129,11 @@ public sealed partial class AdminDb
             await notif.ExecuteNonQueryAsync(ct);
         }
 
-        await tx.CommitAsync(ct);
-
+        // 감사 로그를 제재와 같은 트랜잭션 안에서(커밋 후 별도 실행 시 로그 유실 방지 — ADM-12).
         var detail = until is { } u ? $"until {u:u}" : reason;
         await LogAsync(conn, actor, $"user.{type}", userId.ToString(),
-            reportId is { } rp ? $"report {rp}; {detail}" : detail, ct);
+            reportId is { } rp ? $"report {rp}; {detail}" : detail, ct, tx);
+
+        await tx.CommitAsync(ct);
     }
 }

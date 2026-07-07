@@ -92,24 +92,27 @@ public sealed partial class AdminDb
     {
         if (!Configured || !Guid.TryParse(ratingId, out var rid)) return;
         await using var conn = await OpenAsync(ct);
+        // 리뷰 소프트삭제 + 신고 resolved + 감사로그를 한 트랜잭션으로(부분 실패 방지 — ADM-12).
+        await using var tx = await conn.BeginTransactionAsync(ct);
         await using (var del = new NpgsqlCommand(
             """
             update public.ratings
             set deleted_at = now(), deleted_by = @by, deleted_reason = @reason
             where id = @rid and deleted_at is null
-            """, conn))
+            """, conn, tx))
         {
             del.Parameters.AddWithValue("rid", rid);
             del.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
             del.Parameters.AddWithValue("reason", $"report:{reportId}");
             await del.ExecuteNonQueryAsync(ct);
         }
-        await using (var upd = new NpgsqlCommand("update public.reports set status = 'resolved' where id = @id", conn))
+        await using (var upd = new NpgsqlCommand("update public.reports set status = 'resolved' where id = @id", conn, tx))
         {
             upd.Parameters.AddWithValue("id", reportId);
             await upd.ExecuteNonQueryAsync(ct);
         }
-        await LogAsync(conn, actor, "rating.delete", ratingId, $"report {reportId}", ct);
+        await LogAsync(conn, actor, "rating.delete", ratingId, $"report {reportId}", ct, tx);
+        await tx.CommitAsync(ct);
     }
 
     // ── 리뷰 모더레이션(신고 없이 직접) NON-98 ──
@@ -130,7 +133,7 @@ public sealed partial class AdminDb
             order by r.created_at desc
             limit 100
             """, conn);
-        cmd.Parameters.AddWithValue("q", search ?? "");
+        cmd.Parameters.AddWithValue("q", LikeEscape(search ?? ""));
         var list = new List<ReviewRow>();
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         while (await rd.ReadAsync(ct))

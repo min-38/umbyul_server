@@ -5,6 +5,7 @@ using Admin.Data;
 using Admin.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -58,6 +59,22 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
+// 세션 쿠키 암호화 키 지속화(ADM-14) — 미설정 시 재시작마다 키 소실 → 전 세션 무효화(운영 불편).
+// 컨테이너/다중 인스턴스면 DataProtection:KeyPath 에 공유 볼륨 경로 지정.
+var keyPath = builder.Configuration["DataProtection:KeyPath"];
+if (!string.IsNullOrEmpty(keyPath))
+    builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyPath));
+
+// 신뢰 프록시의 X-Forwarded-* 반영(RemoteIpAddress·scheme) — Secure 쿠키·로그인 레이트리밋 IP 정확도(ADM-14).
+// 프록시 IP 는 배포별이라 설정(ForwardedHeaders:KnownProxies)으로 주입. 미설정이면 루프백만 신뢰.
+builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
+                         | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto;
+    foreach (var ip in builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+        if (System.Net.IPAddress.TryParse(ip, out var addr)) o.KnownProxies.Add(addr);
+});
+
 var app = builder.Build();
 
 // 부트스트랩: ADMIN:BOOTSTRAP_* 설정 시 첫 관리자 생성(없을 때만).
@@ -76,6 +93,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
+app.UseForwardedHeaders(); // 신뢰 프록시 X-Forwarded-* 반영(ADM-14) — HTTPS 리다이렉트·쿠키 이전에.
 app.UseHttpsRedirection();
 
 app.UseAuthentication();
@@ -84,8 +102,11 @@ app.UseRateLimiter();
 app.UseAntiforgery();
 
 // 로그인/로그아웃은 minimal endpoint(Blazor 컴포넌트는 응답 시작 후라 쿠키 세팅 불가).
-app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db) =>
+app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db, Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery) =>
 {
+    // 로그인 폼의 AntiforgeryToken 검증(로그인-CSRF 차단, ADM-8). 수동 폼이라 미들웨어 대신 직접 검증.
+    try { await antiforgery.ValidateRequestAsync(ctx); }
+    catch (Microsoft.AspNetCore.Antiforgery.AntiforgeryValidationException) { return Results.Redirect("/login?error=1"); }
     var form = await ctx.Request.ReadFormAsync();
     var username = form["username"].ToString();
     var password = form["password"].ToString();
@@ -101,7 +122,7 @@ app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db) =>
     await db.LogAsync(new Actor(null, string.IsNullOrEmpty(username) ? "?" : username), "login.failed",
         null, ctx.Connection.RemoteIpAddress?.ToString());
     return Results.Redirect("/login?error=1");
-}).DisableAntiforgery().RequireRateLimiting("login");
+}).DisableAntiforgery().RequireRateLimiting("login"); // 미들웨어 자동검증은 끄고 위에서 수동 검증(ADM-8)
 
 // 세션 연장: 인증 상태면 새 만료(1h)로 쿠키 재발급 후 원래 페이지로(NON-53).
 app.MapPost("/auth/refresh", async (HttpContext ctx, AdminDb db) =>
