@@ -22,6 +22,11 @@ public static class SetEndpoints
     private static bool ValidYoutube(string? url) =>
         string.IsNullOrWhiteSpace(url) || YoutubePattern.IsMatch(url.Trim());
 
+    // 듣기 링크: null/빈값이면 통과, 값 있으면 http(s) 절대 URL이어야 함 (javascript:/data: 저장 차단 — SEC-A-6/SEC-W-1).
+    private static bool ValidListenUrl(string? url) =>
+        string.IsNullOrWhiteSpace(url) ||
+        (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps));
+
     public sealed record TrackArtist(string Id, string Name);
     public sealed record SetCreateRequest(string? Title, string? Note, string? ListenUrl);
     public sealed record TrackAddRequest(
@@ -196,6 +201,7 @@ public static class SetEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 bool liked;
                 await using (var del = new NpgsqlCommand(
                     "delete from public.set_likes where set_id = @sid and user_id = @uid", conn))
@@ -228,11 +234,13 @@ public static class SetEndpoints
             if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
             var title = req.Title?.Trim();
             if (string.IsNullOrEmpty(title) || title.Length > 100) return ApiResults.BadRequest("INVALID_TITLE");
+            if (!ValidListenUrl(req.ListenUrl)) return ApiResults.BadRequest("INVALID_URL");
 
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 await using var cmd = new NpgsqlCommand(
                     """
                     insert into public.sets (owner_id, title, note, listen_url)
@@ -256,10 +264,12 @@ public static class SetEndpoints
             if (!Guid.TryParse(id, out var sid)) return ApiResults.BadRequest("INVALID_TARGET");
             var title = req.Title?.Trim();
             if (string.IsNullOrEmpty(title) || title.Length > 100) return ApiResults.BadRequest("INVALID_TITLE");
+            if (!ValidListenUrl(req.ListenUrl)) return ApiResults.BadRequest("INVALID_URL");
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 await using var cmd = new NpgsqlCommand(
                     "update public.sets set title = @t, note = @n, listen_url = @l, updated_at = now() where id = @sid and owner_id = @o", conn);
                 cmd.Parameters.AddWithValue("t", title);
@@ -307,6 +317,7 @@ public static class SetEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 if (!await OwnsAsync(conn, sid, uid)) return ApiResults.NotFound("SET_NOT_FOUND");
                 if (await CountAsync(conn, sid) >= MaxTracks) return ApiResults.BadRequest("SET_FULL");
 
@@ -346,6 +357,7 @@ public static class SetEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 if (!await OwnsAsync(conn, sid, uid)) return ApiResults.NotFound("SET_NOT_FOUND");
                 for (var i = 0; i < ids.Count; i++)
                 {
@@ -373,6 +385,7 @@ public static class SetEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 if (!await OwnsAsync(conn, sid, uid)) return ApiResults.NotFound("SET_NOT_FOUND");
                 await using var cmd = new NpgsqlCommand(
                     "update public.set_tracks set youtube_url = @yt where set_id = @sid and spotify_id = @sp", conn);
@@ -422,6 +435,7 @@ public static class SetEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 if (!await OwnsAsync(conn, sid, uid)) return ApiResults.NotFound("SET_NOT_FOUND");
 
                 await using var cmd = new NpgsqlCommand(
@@ -551,6 +565,7 @@ public static class SetEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 await using var cmd = new NpgsqlCommand(
                     "update public.set_comments set body = @body, edited_at = now() where id = @cid and user_id = @uid and deleted_at is null", conn);
                 cmd.Parameters.AddWithValue("body", body);

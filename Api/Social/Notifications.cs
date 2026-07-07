@@ -26,6 +26,10 @@ public static class Notifications
                         or (@t = 'review_like' and p.review_like = false)
                     )
                 )
+                and not exists (
+                    select 1 from public.blocks b
+                    where (b.blocker_id = @r and b.blocked_id = @a) or (b.blocker_id = @a and b.blocked_id = @r)
+                )
                 """, conn);
             cmd.Parameters.AddWithValue("r", recipientId);
             cmd.Parameters.AddWithValue("a", actorId);
@@ -56,6 +60,10 @@ public static class Notifications
                 and not exists (
                     select 1 from public.mention_mutes m
                     where m.user_id = @r and m.target_type = @tt and m.target_spotify_id = @tsid
+                )
+                and not exists (
+                    select 1 from public.blocks b
+                    where (b.blocker_id = @r and b.blocked_id = @a) or (b.blocker_id = @a and b.blocked_id = @r)
                 )
                 """, conn);
             cmd.Parameters.AddWithValue("r", recipientId);

@@ -42,7 +42,7 @@ public static class ProfileEndpoints
             cmd.Parameters.AddWithValue("e", email.Trim());
             var taken = await cmd.ExecuteScalarAsync() is not null;
             return ApiResults.Ok("OK", new { available = !taken, reason = taken ? "TAKEN" : null });
-        });
+        }).RequireRateLimiting("email-check"); // 이메일 열거 방지: IP당 분당 제한 (SEC-A-5)
 
         var me = app.MapGroup("/me").RequireAuthorization();
 

@@ -187,6 +187,8 @@ public static class AccountEndpoints
         app.MapGet("/media/avatar/{**key}", async (string key, R2Storage storage, CancellationToken ct) =>
         {
             if (!storage.Configured) return Results.NotFound();
+            // 버킷 내 아바타만 서빙 — 임의 키/경로 탈출 차단(SEC-A-8).
+            if (string.IsNullOrEmpty(key) || !key.StartsWith("avatars/", StringComparison.Ordinal) || key.Contains("..")) return Results.NotFound();
             var obj = await storage.GetAsync(key, ct);
             if (obj is null) return Results.NotFound();
             return Results.Stream(obj.Value.Content, obj.Value.ContentType);

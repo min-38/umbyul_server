@@ -216,6 +216,7 @@ public static class CommentEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 await using var cmd = new NpgsqlCommand(
                     "update public.review_comments set body = @body, edited_at = now() where id = @cid and user_id = @uid and deleted_at is null", conn);
                 cmd.Parameters.AddWithValue("body", body);

@@ -102,6 +102,7 @@ builder.Services.AddSingleton<R2Storage>();
 
 // 레이트리밋(NON-96): 쓰기(POST/PUT/DELETE)만 유저(sub)/IP 기준 슬라이딩 윈도우로 제한.
 // 조회(GET/HEAD)·이미지 프록시는 무제한(브라우징·아바타 버스트 보호). 초과 시 429 {code:RATE_LIMITED}.
+// IP는 UseForwardedHeaders로 신뢰 프록시에서만 복원한 RemoteIpAddress 사용 — 원시 X-Forwarded-For는 스푸핑 가능(SEC-A-4).
 builder.Services.AddRateLimiter(options =>
 {
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
@@ -110,7 +111,6 @@ builder.Services.AddRateLimiter(options =>
         if (HttpMethods.IsGet(m) || HttpMethods.IsHead(m) || HttpMethods.IsOptions(m))
             return RateLimitPartition.GetNoLimiter("read");
         var key = ctx.User.FindFirstValue("sub")
-                  ?? ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
                   ?? ctx.Connection.RemoteIpAddress?.ToString()
                   ?? "anon";
         return RateLimitPartition.GetSlidingWindowLimiter(key, _ => new SlidingWindowRateLimiterOptions
@@ -121,12 +121,27 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
         });
     });
+    // 공개 GET인 /email-available은 전역 리미터(GET 면제) 밖 → 이메일 열거 방지 위해 IP당 별도 제한(SEC-A-5).
+    options.AddPolicy("email-check", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.OnRejected = async (ctx, ct) =>
     {
         ctx.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
         ctx.HttpContext.Response.ContentType = "application/json";
         await ctx.HttpContext.Response.WriteAsync("{\"code\":\"RATE_LIMITED\",\"data\":null}", ct);
     };
+});
+
+// 신뢰 프록시 뒤에서만 X-Forwarded-For로 실제 클라이언트 IP를 복원(레이트리밋 파티션 스푸핑 방지 — SEC-A-4).
+// 프록시 IP는 배포별이라 설정(ForwardedHeaders:KnownProxies)으로 주입. 미설정이면 루프백만 신뢰(안전측: 프록시 뒤에선 과도 제한 → 우회보다 안전).
+builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
+                         | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto;
+    foreach (var ip in builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+        if (System.Net.IPAddress.TryParse(ip, out var addr)) o.KnownProxies.Add(addr);
 });
 
 var app = builder.Build();
@@ -136,6 +151,9 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
+
+// 신뢰 프록시의 X-Forwarded-* 반영(RemoteIpAddress·scheme) — 레이트리밋 IP 파티션의 신뢰 원천(SEC-A-4).
+app.UseForwardedHeaders();
 
 app.UseHttpsRedirection();
 
