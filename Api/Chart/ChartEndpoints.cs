@@ -96,7 +96,7 @@ public static class ChartEndpoints
                         rd.GetString(0), rd.GetString(1), (int)rd.GetInt64(2), rd.GetDouble(3),
                         rd.IsDBNull(4) ? null : rd.GetString(4), rd.IsDBNull(5) ? null : rd.GetString(5),
                         rd.IsDBNull(6) ? null : rd.GetString(6),
-                        rd.IsDBNull(7) ? null : ParseArtists(rd.GetString(7)),
+                        rd.IsDBNull(7) ? null : ArtistRef.Parse(rd.GetString(7)),
                         rd.GetBoolean(8)));
                 return ApiResults.Ok("OK", new ChartData(list));
             }
@@ -225,11 +225,6 @@ public static class ChartEndpoints
         return ApiResults.Ok("OK", new ArtistChartData(list));
     }
 
-    private static IReadOnlyList<ArtistRef>? ParseArtists(string json)
-    {
-        try { return JsonSerializer.Deserialize<List<ArtistRef>>(json); }
-        catch (JsonException) { return null; }
-    }
 }
 
 public sealed record ChartItem(

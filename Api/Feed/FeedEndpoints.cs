@@ -90,7 +90,7 @@ public static class FeedEndpoints
                         rd.GetDecimal(6), rd.GetString(7), rd.GetFieldValue<DateTimeOffset>(8),
                         rd.IsDBNull(9) ? null : rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10),
                         rd.IsDBNull(11) ? null : rd.GetString(11),
-                        rd.IsDBNull(12) ? null : ParseArtists(rd.GetString(12)),
+                        rd.IsDBNull(12) ? null : ArtistRef.Parse(rd.GetString(12)),
                         (int)rd.GetInt64(13), (int)rd.GetInt64(14),
                         rd.IsDBNull(15) ? null : rd.GetString(15),
                         (int)rd.GetInt64(16), rd.GetBoolean(17)));
@@ -130,11 +130,6 @@ public static class FeedEndpoints
 
     public sealed record DismissRequest(string? RatingId);
 
-    private static IReadOnlyList<ArtistRef>? ParseArtists(string json)
-    {
-        try { return JsonSerializer.Deserialize<List<ArtistRef>>(json); }
-        catch (JsonException) { return null; }
-    }
 
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;

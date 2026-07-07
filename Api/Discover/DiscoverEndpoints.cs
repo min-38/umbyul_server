@@ -65,16 +65,11 @@ public static class DiscoverEndpoints
                 r.GetString(0), r.GetString(1), (int)r.GetInt64(2), r.GetDouble(3),
                 r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? null : r.GetString(5),
                 r.IsDBNull(6) ? null : r.GetString(6),
-                r.IsDBNull(7) ? null : ParseArtists(r.GetString(7)),
+                r.IsDBNull(7) ? null : ArtistRef.Parse(r.GetString(7)),
                 r.GetBoolean(8)));
         return list;
     }
 
-    private static IReadOnlyList<ArtistRef>? ParseArtists(string json)
-    {
-        try { return JsonSerializer.Deserialize<List<ArtistRef>>(json); }
-        catch (JsonException) { return null; }
-    }
 
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
