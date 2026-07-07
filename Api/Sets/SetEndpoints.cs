@@ -361,16 +361,20 @@ public static class SetEndpoints
                 await conn.OpenAsync();
                 if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
                 if (!await OwnsAsync(conn, sid, uid)) return ApiResults.NotFound("SET_NOT_FOUND");
+                // 전체 position 재기록을 한 트랜잭션으로 — 중간 중복/갭·부분 실패 방지(LOG-A-1).
+                // 유니크 제약(0056)은 deferrable initially deferred 라 커밋 시점에만 검증 → 행별 임시 중복 허용.
+                await using var tx = await conn.BeginTransactionAsync();
                 for (var i = 0; i < ids.Count; i++)
                 {
                     await using var cmd = new NpgsqlCommand(
-                        "update public.set_tracks set position = @p where set_id = @sid and spotify_id = @sp", conn);
+                        "update public.set_tracks set position = @p where set_id = @sid and spotify_id = @sp", conn, tx);
                     cmd.Parameters.AddWithValue("p", i);
                     cmd.Parameters.AddWithValue("sid", sid);
                     cmd.Parameters.AddWithValue("sp", ids[i]);
                     await cmd.ExecuteNonQueryAsync();
                 }
-                await TouchAsync(conn, sid);
+                await TouchAsync(conn, sid, tx);
+                await tx.CommitAsync();
                 return ApiResults.Ok("OK");
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -588,10 +592,10 @@ public static class SetEndpoints
         return (bool)(await cmd.ExecuteScalarAsync())!;
     }
 
-    // 믹스 변경 시각 갱신(곡 추가/삭제/순서/링크 편집).
-    private static async Task TouchAsync(NpgsqlConnection conn, Guid sid)
+    // 믹스 변경 시각 갱신(곡 추가/삭제/순서/링크 편집). 활성 트랜잭션이 있으면 그 안에서.
+    private static async Task TouchAsync(NpgsqlConnection conn, Guid sid, NpgsqlTransaction? tx = null)
     {
-        await using var cmd = new NpgsqlCommand("update public.sets set updated_at = now() where id = @sid", conn);
+        await using var cmd = new NpgsqlCommand("update public.sets set updated_at = now() where id = @sid", conn, tx);
         cmd.Parameters.AddWithValue("sid", sid);
         await cmd.ExecuteNonQueryAsync();
     }

@@ -30,6 +30,13 @@ public static class Notifications
                     select 1 from public.blocks b
                     where (b.blocker_id = @r and b.blocked_id = @a) or (b.blocker_id = @a and b.blocked_id = @r)
                 )
+                and not exists (
+                    -- 같은 (수신자,행위자,종류,대상)의 안 읽은 알림이 이미 있으면 중복 생성 안 함
+                    -- (좋아요/팔로우 껐다 켜기 반복 스팸 방지 — LOG-A-2). 읽은 뒤엔 다시 알림 가능.
+                    select 1 from public.notifications n
+                    where n.recipient_id = @r and n.actor_id = @a and n.type = @t
+                      and n.target_id is not distinct from @tid and n.read_at is null
+                )
                 """, conn);
             cmd.Parameters.AddWithValue("r", recipientId);
             cmd.Parameters.AddWithValue("a", actorId);
