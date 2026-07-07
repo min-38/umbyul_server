@@ -260,6 +260,9 @@ app.MapChartEndpoints(dbConnString);
 // 약관/개인정보 (/legal/{type}) — 공개 조회 (NON-64)
 app.MapLegalEndpoints(dbConnString);
 
+// 동의 버전 연결·재동의 (/me/consent-status, /me/consent) — LEG-2/5 (NON-148)
+app.MapConsentEndpoints(dbConnString);
+
 // FAQ (/faq) — 공개 조회 (NON-73)
 app.MapFaqEndpoints(dbConnString);
 

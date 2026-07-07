@@ -47,6 +47,7 @@ Supabase 대시보드 → SQL Editor 에 순서대로 붙여넣어 실행한다.
 | 0020–0033 | 경고알림·법률문서/버전/현재/시행일·FAQ·문의·rating_artists·정리(albums/tracks drop)·피드숨김·차단·admin 활성 |
 | 0034–0049 | 장르/태그·로케일확장·댓글스레드/멘션·DJ세트/트랙/유튜브/메타·세트댓글·좋아요/신고·수정·explicit |
 | 0050–0056 | **3차 QA 보강** — RLS 5테이블(0050)·users 컬럼 grant 축소(0051)·reports uuid CHECK(0052)·ratings 쓰기정책 제거(0053)·제약/인덱스(0054)·sets/set_comments 소프트삭제 컬럼(0055)·set_tracks position 유니크(0056) |
+| 0057 | **동의 버전 연결·재동의(LEG-2/5)** — `user_consents`(약관/개인정보 동의를 게시 버전에 연결, append-only) + 기존 회원 grandfather |
 
 - **번호 갭**: `0019` 는 NON-57 에서 만든 `0019_sanction_acknowledged.sql` 을 NON-58 에서 삭제(경고-알림 0020 으로 대체)해 생긴 의도적 빈 번호. `0022` 는 애초에 존재한 적 없이 건너뛴 번호. 둘 다 정상.
 - **유령 컬럼 주의**: 위 삭제 전에 `0019` 를 이미 적용했다면 `user_sanctions.acknowledged_at` 컬럼이 prod 에 남아 있을 수 있다(코드 미참조). 확인 후 필요 시 `alter table public.user_sanctions drop column if exists acknowledged_at;`.

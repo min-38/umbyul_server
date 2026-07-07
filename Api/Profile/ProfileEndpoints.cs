@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
+using Api.Legal;
 using Npgsql;
 
 namespace Api.Profile;
@@ -104,7 +105,7 @@ public static class ProfileEndpoints
         });
 
         // 프로비저닝 — body 또는 user_metadata(이메일 가입)에서 username/country/동의 취득. username UNIQUE 보장.
-        me.MapPost("/profile", async (ProvisionRequest? body, ClaimsPrincipal user) =>
+        me.MapPost("/profile", async (ProvisionRequest? body, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
@@ -156,6 +157,15 @@ public static class ProfileEndpoints
             {
                 return ApiResults.Conflict("USERNAME_TAKEN");
             }
+
+            // 가입 동의를 현재 게시 버전에 연결(LEG-2/5, NON-148). 테이블 미존재(마이그레이션 전)면 무시 — terms_accepted_at 폴백.
+            try
+            {
+                await ConsentEndpoints.RecordAsync(conn, Guid.Parse(id), "terms", ct);
+                await ConsentEndpoints.RecordAsync(conn, Guid.Parse(id), "privacy", ct);
+            }
+            catch (NpgsqlException) { /* user_consents 미존재 등 — 게이트 없이 통과 */ }
+
             return ApiResults.Created("PROVISIONED", new { provisioned = true });
         });
     }
