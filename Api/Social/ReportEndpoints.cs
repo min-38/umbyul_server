@@ -20,7 +20,8 @@ public static class ReportEndpoints
             if (user.FindFirstValue("sub") is not { Length: > 0 } sub || !Guid.TryParse(sub, out var uid))
                 return ApiResults.Unauthorized("UNAUTHORIZED");
             if (!ReportValidation.IsTargetType(req.TargetType)) return ApiResults.BadRequest("INVALID_TARGET_TYPE");
-            if (string.IsNullOrWhiteSpace(req.TargetId)) return ApiResults.BadRequest("INVALID_TARGET");
+            // 5개 대상 타입 모두 uuid — Admin 이 target_id 를 ::uuid 캐스팅하므로 형식 검증(DB-3, 신고 페이지 크래시 방지).
+            if (string.IsNullOrWhiteSpace(req.TargetId) || !Guid.TryParse(req.TargetId, out _)) return ApiResults.BadRequest("INVALID_TARGET");
             if (!ReportValidation.IsReason(req.Reason)) return ApiResults.BadRequest("INVALID_REASON");
             if (!ReportValidation.IsDetail(req.Detail)) return ApiResults.BadRequest("DETAIL_TOO_LONG");
 
