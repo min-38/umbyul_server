@@ -96,6 +96,9 @@ builder.Services.AddMemoryCache();
 // Spotify 응답 캐시 (Postgres) — 재시작·다중 인스턴스에도 유지, 429 완화 (NON-44)
 builder.Services.AddSingleton<ISpotifyResponseCache>(
     dbConnString is null ? new NullSpotifyResponseCache() : new PostgresSpotifyResponseCache(dbConnString));
+// 오래된 spotify_cache 주기 삭제(LEG-7 / DB-16). DB 미설정이면 미등록.
+if (dbConnString is not null)
+    builder.Services.AddHostedService(_ => new SpotifyCachePurgeService(dbConnString));
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 
