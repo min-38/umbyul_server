@@ -58,7 +58,8 @@ public static class SetEndpoints
             var lim = Math.Clamp(limit ?? 30, 1, 50);
             var off = Math.Max(0, offset ?? 0);
             var orderBy = sort == "popular" ? "like_count desc, s.created_at desc" : "s.created_at desc";
-            var search = string.IsNullOrWhiteSpace(q) ? "" : "where s.title ilike '%' || @q || '%'";
+            // 소프트삭제(관리자 테이크다운, NON-141)된 믹스는 목록에서 제외.
+            var search = string.IsNullOrWhiteSpace(q) ? "" : "and s.title ilike '%' || @q || '%'";
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
@@ -69,6 +70,7 @@ public static class SetEndpoints
                            (select count(*) from public.set_tracks t where t.set_id = s.id)::int, s.updated_at, (select array_agg(img) from (select image_url as img from public.set_tracks where set_id = s.id and image_url is not null order by position limit 2) x) as covers, (select count(*) from public.set_likes l where l.set_id = s.id)::int as like_count, (@me is not null and exists (select 1 from public.set_likes l where l.set_id = s.id and l.user_id = @me)) as liked
                     from public.sets s
                     join public.users u on u.id = s.owner_id
+                    where s.deleted_at is null
                     {search}
                     order by {orderBy}
                     limit @lim offset @off
@@ -109,7 +111,7 @@ public static class SetEndpoints
                            (select count(*) from public.set_tracks t where t.set_id = s.id)::int, s.updated_at, (select array_agg(img) from (select image_url as img from public.set_tracks where set_id = s.id and image_url is not null order by position limit 2) x) as covers, (select count(*) from public.set_likes l where l.set_id = s.id)::int as like_count, (@me is not null and exists (select 1 from public.set_likes l where l.set_id = s.id and l.user_id = @me)) as liked
                     from public.sets s
                     join public.users u on u.id = s.owner_id
-                    where s.id = @sid
+                    where s.id = @sid and s.deleted_at is null
                     """, conn))
                 {
                     cmd.Parameters.AddWithValue("sid", sid);
@@ -170,7 +172,7 @@ public static class SetEndpoints
                            (select count(*) from public.set_tracks t where t.set_id = s.id)::int, s.updated_at, (select array_agg(img) from (select image_url as img from public.set_tracks where set_id = s.id and image_url is not null order by position limit 2) x) as covers, (select count(*) from public.set_likes l where l.set_id = s.id)::int as like_count, (@me is not null and exists (select 1 from public.set_likes l where l.set_id = s.id and l.user_id = @me)) as liked
                     from public.sets s
                     join public.users u on u.id = s.owner_id
-                    where lower(u.username) = lower(@un)
+                    where lower(u.username) = lower(@un) and s.deleted_at is null
                     order by s.created_at desc
                     """, conn);
                 cmd.Parameters.AddWithValue("un", username);

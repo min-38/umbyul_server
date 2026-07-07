@@ -56,7 +56,7 @@ else
             {
                 <tr>
                     <td>
-                        <span class="badge bg-secondary">@(r.TargetType == "rating" ? "리뷰" : "유저")</span>
+                        <span class="badge bg-secondary">@TypeLabel(r.TargetType)</span>
                         @if (r.TargetDeleted) { <span class="badge bg-dark">삭제됨</span> }
                         <strong>@r.Title</strong>
                         @if (r.Sub is not null) { <div class="small text-muted">@r.Sub</div> }
@@ -76,9 +76,9 @@ else
                         {
                             <button class="btn btn-sm btn-outline-success me-1" @onclick='() => SetStatus(r.Id, "resolved")' disabled="@Busy">해결</button>
                         }
-                        @if (r.TargetType == "rating" && !r.TargetDeleted)
+                        @if (r.TargetType != "user" && !r.TargetDeleted)
                         {
-                            <button class="btn btn-sm btn-outline-danger me-1" @onclick="() => DeleteReview(r)" disabled="@Busy">리뷰 삭제</button>
+                            <button class="btn btn-sm btn-outline-danger me-1" @onclick="() => DeleteTarget(r)" disabled="@Busy">@DeleteLabel(r.TargetType)</button>
                         }
                         @if (r.OffenderId is not null)
                         {
@@ -161,12 +161,38 @@ else
         await Load(filter);
     });
 
-    private Task DeleteReview(ReportRow r) => RunAsync(async () =>
+    private Task DeleteTarget(ReportRow r) => RunAsync(async () =>
     {
         using (Guard.Work())
-            await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId, await CurrentActor());
+        {
+            var actor = await CurrentActor();
+            switch (r.TargetType)
+            {
+                case "rating": await Db.DeleteRatingAndResolveAsync(r.Id, r.TargetId, actor); break;
+                case "comment": await Db.DeleteCommentAndResolveAsync(r.Id, r.TargetId, actor); break;
+                case "set_comment": await Db.DeleteSetCommentAndResolveAsync(r.Id, r.TargetId, actor); break;
+                case "set": await Db.DeleteSetAndResolveAsync(r.Id, r.TargetId, actor); break;
+            }
+        }
         await Load(filter);
-    }, confirm: "이 리뷰를 삭제할까요? 공개에서 즉시 숨겨집니다.");
+    }, confirm: "이 콘텐츠를 삭제할까요? 공개에서 즉시 숨겨집니다.");
+
+    private static string TypeLabel(string t) => t switch
+    {
+        "rating" => "리뷰",
+        "comment" => "댓글",
+        "set_comment" => "믹스 댓글",
+        "set" => "믹스",
+        _ => "유저",
+    };
+
+    private static string DeleteLabel(string t) => t switch
+    {
+        "rating" => "리뷰 삭제",
+        "comment" or "set_comment" => "댓글 삭제",
+        "set" => "믹스 삭제",
+        _ => "삭제",
+    };
 
     private static string Reason(string r) => r switch
     {

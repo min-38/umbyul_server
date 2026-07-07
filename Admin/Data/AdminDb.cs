@@ -328,6 +328,10 @@ public sealed record ReviewRow(
     Guid Id, Guid UserId, string Username, string TargetType, string? Name, string? Artist, string? SpotifyId,
     decimal Score, string Review, DateTimeOffset CreatedAt);
 
+/// 믹스 모더레이션 목록 행(NON-141).
+public sealed record SetRow(
+    Guid Id, Guid OwnerId, string OwnerUsername, string Title, string? Note, int TrackCount, DateTimeOffset CreatedAt);
+
 /// 대시보드 운영 지표(NON-100).
 public sealed record DashboardStats(
     int PendingReports, int OpenInquiries, int UsersToday, int UsersTotal,

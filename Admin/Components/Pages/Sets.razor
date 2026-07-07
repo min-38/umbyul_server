@@ -1,4 +1,4 @@
-@page "/reviews"
+@page "/sets"
 @attribute [Authorize]
 @rendermode InteractiveServer
 @inherits AdminPageBase
@@ -6,11 +6,11 @@
 @inject AdminDb Db
 @inject AuthenticationStateProvider AuthState
 
-<PageTitle>리뷰 모더레이션</PageTitle>
+<PageTitle>믹스 모더레이션</PageTitle>
 
 <div class="page-header">
-    <h1>리뷰</h1>
-    <p class="subtitle">신고 없이도 부적절한 리뷰를 검색해 삭제하고, 작성자를 제재합니다.</p>
+    <h1>믹스</h1>
+    <p class="subtitle">신고 없이도 부적절한 믹스를 검색해 삭제하고, 소유자를 제재합니다.</p>
 </div>
 
 @if (!Db.Configured)
@@ -20,7 +20,7 @@
 else
 {
     <div class="mb-3 d-flex gap-2" style="max-width:480px">
-        <input class="form-control form-control-sm" placeholder="유저명·리뷰 내용 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+        <input class="form-control form-control-sm" placeholder="제목·소유자명 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
         <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load" disabled="@Busy">검색</button>
     </div>
 
@@ -29,47 +29,45 @@ else
         <div class="alert alert-danger py-2">@Error</div>
     }
 
-    @if (reviews is null)
+    @if (sets is null)
     {
         <p class="text-muted">불러오는 중…</p>
     }
-    else if (reviews.Count == 0)
+    else if (sets.Count == 0)
     {
-        <div class="card"><div class="card-body text-center text-muted py-5">리뷰가 없습니다.</div></div>
+        <div class="card"><div class="card-body text-center text-muted py-5">믹스가 없습니다.</div></div>
     }
     else
     {
-        @foreach (var r in reviews)
+        @foreach (var s in sets)
         {
-            <div class="card mb-2" @key="r.Id">
+            <div class="card mb-2" @key="s.Id">
                 <div class="card-body py-2">
                     <div class="d-flex align-items-center gap-2 mb-1 small">
-                        <span class="badge @(r.TargetType == "track" ? "bg-primary" : "bg-success")">@(r.TargetType == "track" ? "곡" : "앨범")</span>
-                        <span class="fw-semibold">@(r.Name ?? "(제목 미상)")</span>
-                        @if (r.Artist is not null) { <span class="text-muted">· @r.Artist</span> }
-                        <span class="ms-auto fw-semibold">★ @r.Score.ToString("0.0")</span>
+                        <span class="fw-semibold">@s.Title</span>
+                        <span class="badge bg-secondary">@(s.TrackCount)곡</span>
+                        <span class="ms-auto text-muted">@s.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
                     </div>
-                    <p class="mb-1" style="white-space:pre-wrap">@r.Review</p>
+                    @if (s.Note is not null) { <p class="mb-1 small text-muted" style="white-space:pre-wrap">@s.Note</p> }
                     <div class="d-flex align-items-center gap-2 small text-muted">
-                        <span class="fw-semibold text-body">@r.Username</span>
-                        <span>· @r.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                        <span class="fw-semibold text-body">@s.OwnerUsername</span>
                         <span class="ms-auto"></span>
-                        <button class="btn btn-sm btn-outline-danger" @onclick="() => ToggleDelete(r.Id)" disabled="@Busy">삭제</button>
-                        <button class="btn btn-sm btn-outline-dark" @onclick="() => ToggleSanction(r.Id)" disabled="@Busy">작성자 제재</button>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => ToggleDelete(s.Id)" disabled="@Busy">삭제</button>
+                        <button class="btn btn-sm btn-outline-dark" @onclick="() => ToggleSanction(s.Id)" disabled="@Busy">소유자 제재</button>
                     </div>
 
-                    @if (deletingId == r.Id)
+                    @if (deletingId == s.Id)
                     {
                         <div class="mt-2 d-flex gap-2 align-items-center">
                             <input class="form-control form-control-sm" placeholder="삭제 사유(선택)" @bind="deleteReason" style="max-width:320px" />
-                            <button class="btn btn-sm btn-danger" @onclick="() => Delete(r.Id)" disabled="@Busy">삭제 확정</button>
+                            <button class="btn btn-sm btn-danger" @onclick="() => Delete(s.Id)" disabled="@Busy">삭제 확정</button>
                             <button class="btn btn-sm btn-outline-secondary" @onclick="() => deletingId = null" disabled="@Busy">취소</button>
                         </div>
                     }
-                    @if (sanctionId == r.Id)
+                    @if (sanctionId == s.Id)
                     {
                         <div class="mt-2 bg-body-tertiary rounded p-2">
-                            <SanctionControls UserId="r.UserId" OnDone="Load" />
+                            <SanctionControls UserId="s.OwnerId" OnDone="Load" />
                         </div>
                     }
                 </div>
@@ -87,7 +85,7 @@ else
 
 @code {
     private const int PageSize = 50;
-    private List<ReviewRow>? reviews;
+    private List<SetRow>? sets;
     private string search = "";
     private Guid? deletingId;
     private Guid? sanctionId;
@@ -99,12 +97,12 @@ else
 
     private async Task Load()
     {
-        reviews = null;
+        sets = null;
         offset = 0;
         await LoadAsync(async () =>
         {
-            var page = await Db.ListReviewsAsync(search, 0, PageSize);
-            reviews = page;
+            var page = await Db.ListSetsAsync(search, 0, PageSize);
+            sets = page;
             offset = page.Count;
             hasMore = page.Count == PageSize;
         });
@@ -112,8 +110,8 @@ else
 
     private Task LoadMore() => RunAsync(async () =>
     {
-        var page = await Db.ListReviewsAsync(search, offset, PageSize);
-        reviews!.AddRange(page);
+        var page = await Db.ListSetsAsync(search, offset, PageSize);
+        sets!.AddRange(page);
         offset += page.Count;
         hasMore = page.Count == PageSize;
     });
@@ -138,7 +136,7 @@ else
 
     private Task Delete(Guid id) => RunAsync(async () =>
     {
-        await Db.SoftDeleteRatingAsync(id, string.IsNullOrWhiteSpace(deleteReason) ? null : deleteReason.Trim(), await CurrentActor());
+        await Db.SoftDeleteSetAsync(id, string.IsNullOrWhiteSpace(deleteReason) ? null : deleteReason.Trim(), await CurrentActor());
         deletingId = null;
         await Load();
     });
