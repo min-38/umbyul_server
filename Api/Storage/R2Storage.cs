@@ -47,6 +47,41 @@ public sealed class R2Storage
         }, ct);
     }
 
+    /// 단일 객체 삭제(없으면 무시). 아바타 교체 시 이전 파일 정리(LEG-3).
+    public async Task DeleteAsync(string key, CancellationToken ct)
+    {
+        if (_s3 is null) return;
+        try { await _s3.DeleteObjectAsync(_bucket, key, ct); }
+        catch (AmazonS3Exception) { /* 이미 없음 등 무시 */ }
+    }
+
+    /// 프리픽스 아래 전체 삭제(계정 탈퇴 시 avatars/{uid}/ 정리 — LEG-3). 페이지네이션 처리.
+    public async Task DeletePrefixAsync(string prefix, CancellationToken ct)
+    {
+        if (_s3 is null) return;
+        try
+        {
+            string? token = null;
+            do
+            {
+                var list = await _s3.ListObjectsV2Async(new ListObjectsV2Request
+                {
+                    BucketName = _bucket,
+                    Prefix = prefix,
+                    ContinuationToken = token,
+                }, ct);
+                if (list.S3Objects is { Count: > 0 } objs)
+                    await _s3.DeleteObjectsAsync(new DeleteObjectsRequest
+                    {
+                        BucketName = _bucket,
+                        Objects = objs.Select(o => new KeyVersion { Key = o.Key }).ToList(),
+                    }, ct);
+                token = list.IsTruncated == true ? list.NextContinuationToken : null;
+            } while (token is not null);
+        }
+        catch (AmazonS3Exception) { /* 스토리지 오류는 탈퇴를 막지 않음 */ }
+    }
+
     /// 객체 스트림 + content-type. 없으면 null.
     public async Task<(Stream Content, string ContentType)?> GetAsync(string key, CancellationToken ct)
     {

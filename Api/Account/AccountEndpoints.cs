@@ -50,10 +50,27 @@ public static class AccountEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync(ct);
-                await using var cmd = new NpgsqlCommand("update public.users set avatar_url = @u where id = @id", conn);
-                cmd.Parameters.AddWithValue("u", avatarUrl);
-                cmd.Parameters.AddWithValue("id", uid);
-                await cmd.ExecuteNonQueryAsync(ct);
+                string? oldUrl;
+                await using (var cmd = new NpgsqlCommand(
+                    """
+                    with old as (select avatar_url as prev from public.users where id = @id)
+                    update public.users set avatar_url = @u where id = @id
+                    returning (select prev from old)
+                    """, conn))
+                {
+                    cmd.Parameters.AddWithValue("u", avatarUrl);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    oldUrl = await cmd.ExecuteScalarAsync(ct) as string;
+                }
+                // 이전 아바타(우리 R2 객체)만 삭제 — 재업로드 시 고아 방지(LEG-3). 외부(OAuth) URL·null 은 스킵.
+                const string marker = "/media/avatar/";
+                var idx = oldUrl?.IndexOf(marker, StringComparison.Ordinal) ?? -1;
+                if (idx >= 0 && oldUrl != avatarUrl)
+                {
+                    var oldKey = oldUrl![(idx + marker.Length)..];
+                    if (oldKey.StartsWith($"avatars/{uid}/", StringComparison.Ordinal))
+                        await storage.DeleteAsync(oldKey, ct);
+                }
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
 
@@ -108,7 +125,7 @@ public static class AccountEndpoints
         });
 
         // 회원 탈퇴 — auth.users 삭제 → public.users 등 cascade
-        me.MapDelete("/account", async (ClaimsPrincipal user) =>
+        me.MapDelete("/account", async (ClaimsPrincipal user, R2Storage storage, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
@@ -134,6 +151,8 @@ public static class AccountEndpoints
                     await del.ExecuteNonQueryAsync();
                 }
                 await tx.CommitAsync();
+                // DB 삭제 확정 후 R2 아바타 정리(GDPR 소거 — LEG-3). 실패해도 탈퇴는 성공 처리(best-effort).
+                await storage.DeletePrefixAsync($"avatars/{uid}/", ct);
                 return ApiResults.Ok("OK");
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -150,13 +169,23 @@ public static class AccountEndpoints
                 await conn.OpenAsync(ct);
 
                 ExportProfile? profile = null;
+                // 내가 제공한 개인정보 전부(GDPR 열람/이동성 — LEG-4). email 은 auth.users.
                 await using (var cmd = new NpgsqlCommand(
-                    "select username, country, created_at from public.users where id = @id", conn))
+                    """
+                    select u.username, au.email, u.country, u.birth_date, u.gender, u.locale, u.avatar_url, u.created_at
+                    from public.users u
+                    left join auth.users au on au.id = u.id
+                    where u.id = @id
+                    """, conn))
                 {
                     cmd.Parameters.AddWithValue("id", uid);
                     await using var r = await cmd.ExecuteReaderAsync(ct);
                     if (await r.ReadAsync(ct))
-                        profile = new ExportProfile(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2));
+                        profile = new ExportProfile(
+                            r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2),
+                            r.IsDBNull(3) ? null : r.GetFieldValue<DateOnly>(3).ToString("yyyy-MM-dd"),
+                            r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? null : r.GetString(5),
+                            r.IsDBNull(6) ? null : r.GetString(6), r.GetFieldValue<DateTimeOffset>(7));
                 }
 
                 var ratings = new List<ExportRating>();
@@ -192,8 +221,26 @@ public static class AccountEndpoints
                 }
                 catch (NpgsqlException) { } // 댓글 테이블 미존재/컬럼 상이 — 생략
 
+                // 내 믹스·차단 목록(LEG-4). 테이블 미존재(구스키마)면 생략.
+                var sets = new List<ExportSet>();
+                var blocked = new List<string>();
+                try
+                {
+                    await using (var cmd = new NpgsqlCommand(
+                        "select title, note, created_at from public.sets where owner_id = @id and deleted_at is null order by created_at", conn))
+                    {
+                        cmd.Parameters.AddWithValue("id", uid);
+                        await using var r = await cmd.ExecuteReaderAsync(ct);
+                        while (await r.ReadAsync(ct))
+                            sets.Add(new ExportSet(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+                    }
+                    blocked = await UsernamesAsync(conn,
+                        "select u.username from public.blocks b join public.users u on u.id = b.blocked_id where b.blocker_id = @id order by u.username", uid, ct);
+                }
+                catch (NpgsqlException) { }
+
                 return ApiResults.Ok("OK", new ExportData(
-                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments));
+                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -228,9 +275,12 @@ public static class AccountEndpoints
 public sealed record ExportData(
     DateTimeOffset ExportedAt, ExportProfile? Profile,
     IReadOnlyList<ExportRating> Ratings, IReadOnlyList<string> Following,
-    IReadOnlyList<string> Followers, IReadOnlyList<ExportComment> Comments);
-public sealed record ExportProfile(string Username, string? Country, DateTimeOffset JoinedAt);
+    IReadOnlyList<string> Followers, IReadOnlyList<ExportComment> Comments,
+    IReadOnlyList<ExportSet> Sets, IReadOnlyList<string> Blocked);
+public sealed record ExportProfile(
+    string Username, string? Email, string? Country, string? BirthDate, string? Gender, string? Locale, string? AvatarUrl, DateTimeOffset JoinedAt);
 public sealed record ExportRating(
     string TargetType, string? SpotifyId, string? Name, string? Artist,
     decimal Score, string? Review, DateTimeOffset CreatedAt);
 public sealed record ExportComment(string Body, DateTimeOffset CreatedAt);
+public sealed record ExportSet(string Title, string? Note, DateTimeOffset CreatedAt);
