@@ -35,7 +35,9 @@ public static class NotificationEndpoints
                            u.username, u.avatar_url, r.target_type, r.target_spotify_id, n.detail
                     from public.notifications n
                     left join public.users u on u.id = n.actor_id
-                    left join public.ratings r on n.type in ('review_like', 'warning', 'mention') and r.id::text = n.target_id and r.deleted_at is null
+                    left join public.ratings r
+                        on r.id = (case when n.type in ('review_like', 'warning', 'mention') then n.target_id::uuid end)
+                       and r.deleted_at is null
                     where n.recipient_id = @me
                     order by n.created_at desc
                     limit 30

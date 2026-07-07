@@ -116,9 +116,24 @@ public static class AccountEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
-                await using var cmd = new NpgsqlCommand("delete from auth.users where id = @id", conn);
-                cmd.Parameters.AddWithValue("id", uid);
-                await cmd.ExecuteNonQueryAsync();
+                await using var tx = await conn.BeginTransactionAsync();
+                // 타인 콘텐츠 보존(DB-5): 떠나는 유저 댓글에 달린 '남의 대댓글'을 최상위로 승격 →
+                // 유저 삭제 cascade(review_comments.parent_id) 가 타인 답글까지 하드삭제하는 것 방지.
+                await using (var promote = new NpgsqlCommand(
+                    """
+                    update public.review_comments set parent_id = null
+                    where user_id <> @id and parent_id in (select id from public.review_comments where user_id = @id)
+                    """, conn, tx))
+                {
+                    promote.Parameters.AddWithValue("id", uid);
+                    await promote.ExecuteNonQueryAsync();
+                }
+                await using (var del = new NpgsqlCommand("delete from auth.users where id = @id", conn, tx))
+                {
+                    del.Parameters.AddWithValue("id", uid);
+                    await del.ExecuteNonQueryAsync();
+                }
+                await tx.CommitAsync();
                 return ApiResults.Ok("OK");
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
