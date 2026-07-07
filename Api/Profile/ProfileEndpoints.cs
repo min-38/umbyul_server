@@ -10,6 +10,8 @@ namespace Api.Profile;
 /// DB 연결은 postgres 유저 → RLS 우회. 모든 엔드포인트는 로그인 필요.
 public static class ProfileEndpoints
 {
+    private const int DemographicsCooldownDays = 30; // 국가/성별 재변경 쿨다운(LEG-11) — 잦은 변경 방지
+
     public static void MapProfileEndpoints(this WebApplication app, string? dbConnString)
     {
         // 공개: username 가용성 — 회원가입(미로그인)·온보딩 공용. 핸들은 공개라 인증 불필요.
@@ -168,6 +170,84 @@ public static class ProfileEndpoints
 
             return ApiResults.Created("PROVISIONED", new { provisioned = true });
         });
+
+        // 국가/성별 정정용 조회(LEG-11). canChangeAt=null 이면 즉시 변경 가능, 아니면 그 시각 이후 가능.
+        me.MapGet("/demographics", async (ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            try
+            {
+                await using var cmd = new NpgsqlCommand(
+                    "select country, gender, demographics_updated_at from public.users where id = @id", conn);
+                cmd.Parameters.AddWithValue("id", Guid.Parse(id));
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                if (!await r.ReadAsync(ct)) return ApiResults.NotFound("PROFILE_NOT_FOUND");
+                var updated = r.IsDBNull(2) ? (DateTimeOffset?)null : r.GetFieldValue<DateTimeOffset>(2);
+                return ApiResults.Ok("OK", new
+                {
+                    country = r.IsDBNull(0) ? null : r.GetString(0),
+                    gender = r.IsDBNull(1) ? null : r.GetString(1),
+                    canChangeAt = updated?.AddDays(DemographicsCooldownDays),
+                });
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn)
+            {
+                // demographics_updated_at 미존재(마이그레이션 0058 전) — 쿨다운 없이 country/gender만
+                await using var cmd = new NpgsqlCommand("select country, gender from public.users where id = @id", conn);
+                cmd.Parameters.AddWithValue("id", Guid.Parse(id));
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                if (!await r.ReadAsync(ct)) return ApiResults.NotFound("PROFILE_NOT_FOUND");
+                return ApiResults.Ok("OK", new
+                {
+                    country = r.IsDBNull(0) ? null : r.GetString(0),
+                    gender = r.IsDBNull(1) ? null : r.GetString(1),
+                    canChangeAt = (DateTimeOffset?)null,
+                });
+            }
+        });
+
+        // 국가/성별 정정(GDPR Art.16, LEG-11). 쿨다운 내 재변경은 거부(DEMOGRAPHICS_COOLDOWN).
+        me.MapPost("/demographics", async (DemographicsRequest? body, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
+            var country = body?.Country?.Trim();
+            var gender = string.IsNullOrWhiteSpace(body?.Gender) ? null : body!.Gender!.Trim();
+            if (!ProfileValidation.IsCountry(country)) return ApiResults.BadRequest("INVALID_COUNTRY");
+            if (gender is not null && !ProfileValidation.IsGender(gender)) return ApiResults.BadRequest("INVALID_GENDER");
+
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            try
+            {
+                await using (var chk = new NpgsqlCommand("select demographics_updated_at from public.users where id = @id", conn))
+                {
+                    chk.Parameters.AddWithValue("id", Guid.Parse(id));
+                    if (await chk.ExecuteScalarAsync(ct) is DateTimeOffset last && DateTimeOffset.UtcNow < last.AddDays(DemographicsCooldownDays))
+                        return ApiResults.BadRequest("DEMOGRAPHICS_COOLDOWN");
+                }
+                await using var upd = new NpgsqlCommand(
+                    "update public.users set country = @c, gender = @g, demographics_updated_at = now() where id = @id", conn);
+                upd.Parameters.AddWithValue("id", Guid.Parse(id));
+                upd.Parameters.AddWithValue("c", country!);
+                upd.Parameters.AddWithValue("g", (object?)gender ?? DBNull.Value);
+                await upd.ExecuteNonQueryAsync(ct);
+                return ApiResults.Ok("OK");
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn)
+            {
+                // 마이그레이션 0058 전 — 쿨다운 없이 country/gender만 갱신(정정 자체는 되게)
+                await using var upd = new NpgsqlCommand("update public.users set country = @c, gender = @g where id = @id", conn);
+                upd.Parameters.AddWithValue("id", Guid.Parse(id));
+                upd.Parameters.AddWithValue("c", country!);
+                upd.Parameters.AddWithValue("g", (object?)gender ?? DBNull.Value);
+                await upd.ExecuteNonQueryAsync(ct);
+                return ApiResults.Ok("OK");
+            }
+        });
     }
 
     // Supabase JWT 의 user_metadata 클레임(JSON 문자열)에서 username/country/동의 추출.
@@ -200,3 +280,5 @@ public record ProvisionRequest(
     string? BirthDate,
     string? Gender,
     bool TermsAccepted);
+
+public record DemographicsRequest(string? Country, string? Gender);
