@@ -11,6 +11,7 @@ namespace Api.Profile;
 public static class ProfileEndpoints
 {
     private const int DemographicsCooldownDays = 60; // 국가/성별/생년월일 재변경 쿨다운(LEG-11) — 잦은 변경 방지
+    private const int MaxGenrePreferences = 20; // 선호 장르 상한(NON-150) — 무의미한 대량 선택 방지
 
     public static void MapProfileEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -168,6 +169,13 @@ public static class ProfileEndpoints
             }
             catch (NpgsqlException) { /* user_consents 미존재 등 — 게이트 없이 통과 */ }
 
+            // 온보딩에서 고른 선호 장르(NON-150) — 베스트에포트(테이블 미존재·잘못된 id면 온보딩은 통과).
+            if (body?.GenreIds is { Length: > 0 } gids)
+            {
+                try { await ReplaceGenrePreferencesAsync(conn, Guid.Parse(id), gids.Distinct().Take(MaxGenrePreferences).ToList(), ct); }
+                catch (NpgsqlException) { /* user_genre_preferences 미존재·FK 등 — 무시 */ }
+            }
+
             return ApiResults.Created("PROVISIONED", new { provisioned = true });
         });
 
@@ -254,6 +262,72 @@ public static class ProfileEndpoints
                 return ApiResults.Ok("OK");
             }
         });
+
+        // 내 선호 장르 조회(NON-150). 마이그레이션(0059) 전이면 빈 목록으로 fail-open.
+        me.MapGet("/genre-preferences", async (ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            try
+            {
+                await using var cmd = new NpgsqlCommand(
+                    "select genre_id from public.user_genre_preferences where user_id = @id order by genre_id", conn);
+                cmd.Parameters.AddWithValue("id", Guid.Parse(id));
+                var ids = new List<int>();
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct)) ids.Add(r.GetInt32(0));
+                return ApiResults.Ok("OK", new { genreIds = ids });
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+            {
+                return ApiResults.Ok("OK", new { genreIds = Array.Empty<int>() });
+            }
+        });
+
+        // 내 선호 장르 저장(NON-150). 세트 전체 교체. 장르 사전에 없는 id는 거부(FK).
+        me.MapPut("/genre-preferences", async (GenrePreferencesRequest? body, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
+            var ids = (body?.GenreIds ?? []).Distinct().Take(MaxGenrePreferences).ToList();
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            try
+            {
+                await ReplaceGenrePreferencesAsync(conn, Guid.Parse(id), ids, ct);
+                return ApiResults.Ok("OK", new { genreIds = ids });
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.ForeignKeyViolation)
+            {
+                return ApiResults.BadRequest("INVALID_GENRE");
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+            {
+                return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); // 마이그레이션 0059 전 — 저장 불가
+            }
+        });
+    }
+
+    // 선호 장르 세트 전체 교체(삭제 후 삽입, 트랜잭션). 온보딩·설정 공용.
+    private static async Task ReplaceGenrePreferencesAsync(NpgsqlConnection conn, Guid uid, IReadOnlyList<int> ids, CancellationToken ct)
+    {
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await using (var del = new NpgsqlCommand("delete from public.user_genre_preferences where user_id = @id", conn, tx))
+        {
+            del.Parameters.AddWithValue("id", uid);
+            await del.ExecuteNonQueryAsync(ct);
+        }
+        if (ids.Count > 0)
+        {
+            await using var ins = new NpgsqlCommand(
+                "insert into public.user_genre_preferences (user_id, genre_id) select @id, unnest(@gids) on conflict do nothing", conn, tx);
+            ins.Parameters.AddWithValue("id", uid);
+            ins.Parameters.AddWithValue("gids", ids.ToArray());
+            await ins.ExecuteNonQueryAsync(ct);
+        }
+        await tx.CommitAsync(ct);
     }
 
     // Supabase JWT 의 user_metadata 클레임(JSON 문자열)에서 username/country/동의 추출.
@@ -285,6 +359,9 @@ public record ProvisionRequest(
     string? Country,
     string? BirthDate,
     string? Gender,
-    bool TermsAccepted);
+    bool TermsAccepted,
+    int[]? GenreIds);
 
 public record DemographicsRequest(string? Country, string? Gender, string? BirthDate);
+
+public record GenrePreferencesRequest(int[]? GenreIds);

@@ -87,7 +87,10 @@ public static class DiscoverEndpoints
     {
         if (me is { } uid)
         {
-            var genres = await PreferredGenresAsync(conn, uid, ct);
+            // 명시 선호 장르(NON-150) 우선 + 리뷰 이력 장르로 보강. 선호만 설정해도 추천이 동작.
+            var genres = (await ExplicitPreferredGenresAsync(conn, uid, ct))
+                .Concat(await PreferredGenresAsync(conn, uid, ct))
+                .Distinct().Take(6).ToList();
             if (genres.Count > 0)
             {
                 var byGenre = await LoadByGenresAsync(conn, uid, genres, ct);
@@ -95,6 +98,25 @@ public static class DiscoverEndpoints
             }
         }
         return await LoadPopularAsync(conn, me, ct);
+    }
+
+    // 명시 선호 장르(NON-150). 마이그레이션(0059) 전이면 빈 목록으로 fail-open.
+    private static async Task<List<int>> ExplicitPreferredGenresAsync(NpgsqlConnection conn, Guid uid, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                "select genre_id from public.user_genre_preferences where user_id = @me", conn);
+            cmd.Parameters.AddWithValue("me", uid);
+            var ids = new List<int>();
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct)) ids.Add(r.GetInt32(0));
+            return ids;
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+        {
+            return [];
+        }
     }
 
     // 취향 장르: 내가 높게 준(≥HighScore) 대상들의 크라우드 태깅 상위 장르.
