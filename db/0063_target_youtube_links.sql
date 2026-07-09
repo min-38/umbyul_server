@@ -1,11 +1,12 @@
--- NON-154: YouTube 링크를 "오늘의 픽"이 아니라 곡/앨범 자체에 귀속. 링크가 있으면 상세 페이지·픽 어디서든
--- YouTube 아이콘 노출. 운영자가 어드민에서 대상별로 지정. 이전 접근(daily_picks.youtube_url)은 제거.
+-- NON-154: YouTube 링크를 곡/앨범 "음악 고유 ID"(target_id = ISRC(track)/UPC(album), 없으면 spotify_id 폴백)에
+-- 귀속. ratings와 동일한 키라 같은 곡의 다른 에디션에도 링크가 뜬다. 링크 있으면 상세·오늘의 픽 어디서든 아이콘.
+-- 운영자는 어드민에서 spotify_id로 추가 → 우리 ratings.target_id 로 해석해 저장.
 create table if not exists public.target_youtube_links (
-    target_type       text not null check (target_type in ('track', 'album')),
-    target_spotify_id text not null,
-    youtube_url       text not null,
-    updated_at        timestamptz not null default now(),
-    primary key (target_type, target_spotify_id)
+    target_type text not null check (target_type in ('track', 'album')),
+    target_id   text not null,   -- ISRC(track)/UPC(album), 없으면 spotify_id 폴백 (ratings.target_id와 동일 규약)
+    youtube_url text not null,
+    updated_at  timestamptz not null default now(),
+    primary key (target_type, target_id)
 );
 
 -- 다른 소유 테이블과 동일: RLS 활성화 + 정책 없음 = PostgREST 직접 접근 차단, .NET(service_role)만.

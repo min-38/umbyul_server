@@ -33,7 +33,7 @@ public static class DetailEndpoints
             var copyright = await FetchCopyrightAsync(spotify, t.AlbumId, ct);
             var targetId = t.Isrc ?? t.SpotifyId;
             var (summary, reviews) = await LoadReviewsAsync(dbConnString, "track", targetId, Me(user), ct);
-            var youtube = await TargetLinks.YoutubeAsync(dbConnString, "track", t.SpotifyId, ct);
+            var youtube = await TargetLinks.YoutubeAsync(dbConnString, "track", targetId, ct);
 
             return ApiResults.Ok("OK", new TrackDetail(
                 t.SpotifyId, t.Name, t.SpotifyUrl, t.Artists, t.Album, t.Isrc, targetId, t.DurationMs,
@@ -61,7 +61,7 @@ public static class DetailEndpoints
                 .Select(t => trackRatings.TryGetValue(t.Id, out var r) ? t with { Rating = r } : t)
                 .ToList();
 
-            var youtube = await TargetLinks.YoutubeAsync(dbConnString, "album", a.SpotifyId, ct);
+            var youtube = await TargetLinks.YoutubeAsync(dbConnString, "album", targetId, ct);
 
             return ApiResults.Ok("OK", new AlbumDetail(
                 a.SpotifyId, a.Name, a.SpotifyUrl, a.Artists, a.ImageUrl, a.Upc, targetId, a.ReleaseDate, a.Copyright,

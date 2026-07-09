@@ -316,8 +316,10 @@ public static class DiscoverEndpoints
         catch (JsonException) { return null; }
 
         // 우리 평점·크라우드 장르 + 대상별 YouTube 링크(NON-154)를 붙임. 실패해도 픽은 살린다.
+        // YouTube는 음악 고유 ID(ISRC/UPC ?? spotify_id)로 귀속 — ratings.target_id와 동일 규약.
         var (average, count, genres) = await LoadPickStatsAsync(conn, type, spotifyId, ct);
-        var youtubeUrl = await TargetLinks.YoutubeAsync(conn, type, spotifyId, ct);
+        var targetId = isrc ?? upc ?? spotifyId;
+        var youtubeUrl = await TargetLinks.YoutubeAsync(conn, type, targetId, ct);
         return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note,
             average, count, genres, spotifyUrl, isrc, upc, youtubeUrl);
     }

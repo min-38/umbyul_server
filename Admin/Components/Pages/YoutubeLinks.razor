@@ -35,7 +35,7 @@ else
             <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 링크</button>
         </div>
         <table class="table table-sm table-hover align-middle mb-0">
-            <thead><tr><th style="width:5rem">종류</th><th>Spotify ID</th><th>YouTube</th><th style="width:4rem"></th></tr></thead>
+            <thead><tr><th style="width:5rem">종류</th><th>대상 ID (ISRC/UPC)</th><th>YouTube</th><th style="width:4rem"></th></tr></thead>
             <tbody>
                 @if (links.Count == 0)
                 {
@@ -45,9 +45,9 @@ else
                 {
                     @foreach (var row in links)
                     {
-                        <tr class="@(editing && !isNew && row.TargetType == targetType && row.SpotifyId == spotifyId ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(row)">
+                        <tr class="@(editing && !isNew && row.TargetType == targetType && row.TargetId == spotifyId ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(row)">
                             <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
-                            <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.SpotifyId</td>
+                            <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.TargetId</td>
                             <td class="text-truncate" style="max-width:20rem"><a href="@row.YoutubeUrl" target="_blank" rel="noopener">@row.YoutubeUrl</a></td>
                             <td class="text-end">
                                 <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" @onclick:stopPropagation disabled="@Busy">삭제</button>
@@ -82,7 +82,11 @@ else
                     {
                         <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
                     }
-                    @if (!isNew)
+                    @if (isNew)
+                    {
+                        <span class="text-muted small">Spotify ID를 넣으면 저장 시 음악 고유 ID(ISRC/UPC)로 변환돼 저장됩니다(우리 리뷰 데이터 기준).</span>
+                    }
+                    else
                     {
                         <span class="text-muted small">종류·ID는 대상 키라 편집 시 고정. 바꾸려면 삭제 후 새로 추가.</span>
                     }
@@ -123,7 +127,7 @@ else
         editing = true;
         isNew = false;
         targetType = row.TargetType;
-        spotifyId = row.SpotifyId;
+        spotifyId = row.TargetId;
         url = row.YoutubeUrl;
         msg = null;
     }
@@ -147,12 +151,12 @@ else
 
     private Task Delete(YoutubeLinkAdminRow row) => RunAsync(async () =>
     {
-        var (ok, error) = await Db.DeleteYoutubeLinkAsync(row.TargetType, row.SpotifyId, await CurrentActor());
+        var (ok, error) = await Db.DeleteYoutubeLinkAsync(row.TargetType, row.TargetId, await CurrentActor());
         if (!ok) { noticeErr = true; notice = error; return; }
-        noticeErr = false; notice = $"{row.SpotifyId} 링크 삭제됨";
-        if (!isNew && targetType == row.TargetType && spotifyId == row.SpotifyId) editing = false;
+        noticeErr = false; notice = $"{row.TargetId} 링크 삭제됨";
+        if (!isNew && targetType == row.TargetType && spotifyId == row.TargetId) editing = false;
         links = await Db.ListYoutubeLinksAsync();
-    }, confirm: $"{row.SpotifyId} YouTube 링크를 삭제할까요?");
+    }, confirm: $"{row.TargetId} YouTube 링크를 삭제할까요?");
 
     private async Task<Actor> CurrentActor()
     {
