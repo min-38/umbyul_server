@@ -17,6 +17,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddSingleton<AdminDb>();
 builder.Services.AddScoped<SessionGuard>(); // 서킷당 진행 중 작업 추적(NON-53)
+builder.Services.AddHttpClient(); // 공지 이미지 업로드 → Api(R2) 프록시 호출(NON-168)
 
 // 관리자 계정(별도 admins 테이블) + 쿠키 세션.
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)

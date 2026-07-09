@@ -18,6 +18,20 @@
     <Routes />
     <ReconnectModal />
     <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script>
+        // 공지 에디터: 텍스트영역 커서 위치에 텍스트 삽입(NON-168). input 이벤트 디스패치로 Blazor 바인딩 갱신.
+        window.insertAtCursor = (el, text) => {
+            if (!el) return false;
+            const s = el.selectionStart ?? el.value.length;
+            const e = el.selectionEnd ?? s;
+            el.value = el.value.slice(0, s) + text + el.value.slice(e);
+            const caret = s + text.length;
+            el.selectionStart = el.selectionEnd = caret;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.focus();
+            return true;
+        };
+    </script>
 </body>
 
 </html>

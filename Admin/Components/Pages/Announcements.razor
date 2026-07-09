@@ -4,8 +4,14 @@
 @inherits AdminPageBase
 @using Admin.Data
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Forms
+@using System.Net.Http.Headers
+@using System.Net.Http.Json
 @inject AdminDb Db
 @inject AuthenticationStateProvider AuthState
+@inject IHttpClientFactory Http
+@inject IConfiguration Config
+@inject IJSRuntime JS
 
 <PageTitle>공지사항</PageTitle>
 
@@ -90,13 +96,21 @@ else
 
                 <input class="form-control form-control-sm mb-2" placeholder="제목 (@locale)" @bind="title" />
 
+                <div class="mb-2 d-flex align-items-center gap-2">
+                    <label class="btn btn-sm btn-outline-secondary mb-0">
+                        이미지 업로드
+                        <InputFile OnChange="OnImageSelected" accept="image/*" hidden />
+                    </label>
+                    <span class="text-muted small">업로드하면 본문 끝에 마크다운 이미지(<code>![](url)</code>)가 추가됩니다.</span>
+                </div>
+
                 <ul class="nav nav-tabs mb-2">
                     <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>본문 편집</button></li>
                     <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
                 </ul>
                 @if (tab == "edit")
                 {
-                    <textarea class="form-control font-monospace" rows="14" @bind="body" @bind:event="oninput" placeholder="본문 (마크다운)"></textarea>
+                    <textarea @ref="bodyRef" class="form-control font-monospace" rows="14" @bind="body" @bind:event="oninput" placeholder="본문 (마크다운)"></textarea>
                 }
                 else
                 {
@@ -127,6 +141,7 @@ else
     private string tab = "edit";
     private string? msg;
     private bool err;
+    private ElementReference bodyRef;
 
     protected override async Task OnInitializedAsync() => await Load();
 
@@ -210,6 +225,48 @@ else
         if (id == itemId) editing = false;
         items = await Db.ListAnnouncementsAsync();
     }, confirm: "이 공지를 삭제할까요? (관련 알림도 삭제)");
+
+    // 이미지 업로드 → Api(공유 시크릿)로 R2 저장 → 프록시 URL을 본문 끝에 마크다운으로 추가.
+    private async Task OnImageSelected(InputFileChangeEventArgs e)
+    {
+        var f = e.File;
+        if (f is null || id is null) return;
+        await RunAsync(async () =>
+        {
+            var apiUrl = Config["API:URL"];
+            var secret = Config["ADMIN:UPLOAD_SECRET"];
+            if (string.IsNullOrEmpty(apiUrl) || string.IsNullOrEmpty(secret))
+            {
+                err = true; msg = "API:URL / ADMIN:UPLOAD_SECRET 설정이 필요합니다."; return;
+            }
+            using var content = new MultipartFormDataContent();
+            await using var stream = f.OpenReadStream(5 * 1024 * 1024);
+            var sc = new StreamContent(stream);
+            sc.Headers.ContentType = new MediaTypeHeaderValue(f.ContentType);
+            content.Add(sc, "file", f.Name);
+            var client = Http.CreateClient();
+            client.DefaultRequestHeaders.Add("X-Admin-Secret", secret);
+            var res = await client.PostAsync($"{apiUrl.TrimEnd('/')}/admin/announcements/image", content);
+            if (!res.IsSuccessStatusCode) { err = true; msg = $"업로드 실패({(int)res.StatusCode})"; return; }
+            var payload = await res.Content.ReadFromJsonAsync<UploadResp>();
+            var url = payload?.Data?.Url;
+            if (string.IsNullOrEmpty(url)) { err = true; msg = "업로드 실패(URL 없음)"; return; }
+            var snippet = $"![]({url})";
+            // 편집 탭이면 커서 위치에 삽입, 아니면 본문 끝에 추가.
+            var inserted = false;
+            if (tab == "edit")
+            {
+                try { inserted = await JS.InvokeAsync<bool>("insertAtCursor", bodyRef, snippet); }
+                catch { inserted = false; }
+            }
+            if (!inserted)
+                body = string.IsNullOrEmpty(body) ? snippet : $"{body}\n\n{snippet}";
+            err = false; msg = inserted ? "이미지 삽입됨(커서 위치) — 저장 필요" : "이미지 추가됨(본문 끝) — 저장 필요";
+        });
+    }
+
+    private sealed record UploadResp(UploadData? Data);
+    private sealed record UploadData(string? Url);
 
     private string PreviewHtml => Admin.Services.SafeMarkdown.ToHtml(body);
 
