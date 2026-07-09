@@ -11,7 +11,9 @@ namespace Api.Profile;
 /// 리뷰 대상 이름/이미지는 target_spotify_id 를 Spotify 배치 조회로 라이브 해석(콘텐츠 비영구).
 public sealed record ProfileReview(
     string Id, string TargetType, string? SpotifyId, decimal Score, string? Body,
-    DateTimeOffset CreatedAt, int LikeCount, string? Name, string? Artist, string? ImageUrl, bool Deleted, bool Explicit);
+    DateTimeOffset CreatedAt, int LikeCount, string? Name, string? Artist, string? ImageUrl, bool Deleted, bool Explicit,
+    // 아티스트 링크(각 id) + 트랙이면 앨범 링크(NON-24 개선). Spotify 라이브 해석에서 채움.
+    IReadOnlyList<Api.Detail.ArtistRef>? Artists = null, string? AlbumId = null, string? AlbumName = null);
 
 public sealed record UserProfile(
     string Id, string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
@@ -131,7 +133,7 @@ public static class PublicProfileEndpoints
             var reviews = rows.Select(x =>
             {
                 display.TryGetValue(x.Id, out var d);
-                return new ProfileReview(x.Id, x.Tt, d.SpotifyId ?? x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image, x.Deleted, x.Explicit);
+                return new ProfileReview(x.Id, x.Tt, d.SpotifyId ?? x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image, x.Deleted, x.Explicit, d.Artists, d.AlbumId, d.AlbumName);
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(
@@ -187,14 +189,15 @@ public static class PublicProfileEndpoints
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
 
-    private record Resolved(string RatingId, string? Name, string? Artist, string? Image, string? SpotifyId);
+    private record Resolved(string RatingId, string? Name, string? Artist, string? Image, string? SpotifyId,
+        IReadOnlyList<Api.Detail.ArtistRef>? Artists = null, string? AlbumId = null, string? AlbumName = null);
 
     // rating id → 표시(이름/아티스트/이미지/spotify_id). 단건 조회를 동시성 8로 병렬.
     // 1순위: target_spotify_id 직접. 폴백: ISRC(track)/UPC(album) 검색(spotify_id 없는 구 평점).
-    private static async Task<Dictionary<string, (string? Name, string? Artist, string? Image, string? SpotifyId)>> ResolveAsync(
+    private static async Task<Dictionary<string, (string? Name, string? Artist, string? Image, string? SpotifyId, IReadOnlyList<Api.Detail.ArtistRef>? Artists, string? AlbumId, string? AlbumName)>> ResolveAsync(
         SpotifyClient spotify, List<Row> rows, CancellationToken ct)
     {
-        var map = new Dictionary<string, (string?, string?, string?, string?)>();
+        var map = new Dictionary<string, (string?, string?, string?, string?, IReadOnlyList<Api.Detail.ArtistRef>?, string?, string?)>();
         if (!spotify.Configured) return map;
 
         using var sem = new SemaphoreSlim(8);
@@ -207,7 +210,7 @@ public static class PublicProfileEndpoints
 
         foreach (var r in await Task.WhenAll(tasks))
             if (r.Name is not null || r.SpotifyId is not null)
-                map[r.RatingId] = (r.Name, r.Artist, r.Image, r.SpotifyId);
+                map[r.RatingId] = (r.Name, r.Artist, r.Image, r.SpotifyId, r.Artists, r.AlbumId, r.AlbumName);
 
         return map;
     }
@@ -248,9 +251,10 @@ public static class PublicProfileEndpoints
         if (tt == "track")
         {
             var t = DetailParse.Track(el);
-            return new Resolved(ratingId, t.Name, t.Artists.Count > 0 ? t.Artists[0].Name : null, t.Album?.ImageUrl, t.SpotifyId);
+            return new Resolved(ratingId, t.Name, t.Artists.Count > 0 ? t.Artists[0].Name : null, t.Album?.ImageUrl, t.SpotifyId,
+                t.Artists, t.Album?.Id, t.Album?.Name);
         }
         var a = DetailParse.Album(el);
-        return new Resolved(ratingId, a.Name, a.Artists.Count > 0 ? a.Artists[0].Name : null, a.ImageUrl, a.SpotifyId);
+        return new Resolved(ratingId, a.Name, a.Artists.Count > 0 ? a.Artists[0].Name : null, a.ImageUrl, a.SpotifyId, a.Artists);
     }
 }
