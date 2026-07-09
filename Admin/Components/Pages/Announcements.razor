@@ -1,0 +1,222 @@
+@page "/announcements"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>공지사항</PageTitle>
+
+<div class="page-header">
+    <h1>공지사항</h1>
+    <p class="subtitle">로케일별로 작성하고 게시합니다. 게시하면 전체 유저에게 끌 수 없는 알림이 1회 발송됩니다.</p>
+</div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body d-flex align-items-center gap-2 py-2">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Load">새로고침</button>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewAnnouncement" disabled="@Busy">+ 새 공지</button>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th>제목</th><th style="width:5rem">상태</th><th style="width:11rem">수정</th><th style="width:3rem"></th></tr></thead>
+            <tbody>
+                @if (items.Count == 0)
+                {
+                    <tr><td colspan="4" class="text-center text-muted py-4">공지가 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var it in items)
+                    {
+                        <tr class="@(editing && it.Id == id ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(it)">
+                            <td class="text-truncate" style="max-width:28rem">@(string.IsNullOrEmpty(it.Title) ? "(제목 없음)" : it.Title)</td>
+                            <td>
+                                @if (it.Published)
+                                {
+                                    <span class="badge bg-success">게시</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">초안</span>
+                                }
+                            </td>
+                            <td class="text-muted small">@it.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(it.Id)" @onclick:stopPropagation disabled="@Busy">삭제</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (editing && id is { } aid)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    <span class="badge @(published ? "bg-success" : "bg-secondary")">@(published ? "게시됨" : "초안")</span>
+                    <span class="text-muted small">로케일</span>
+                    <select class="form-select form-select-sm" style="width:90px" value="@locale" @onchange="OnLocaleChange">
+                        <option value="ko">ko</option>
+                        <option value="en">en</option>
+                        <option value="ja">ja</option>
+                        <option value="es">es</option>
+                    </select>
+                    @if (published)
+                    {
+                        <button class="btn btn-sm btn-outline-warning" @onclick="() => TogglePublish(false)" disabled="@Busy">게시 취소</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-sm btn-success" @onclick="() => TogglePublish(true)" disabled="@Busy">게시</button>
+                    }
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
+                </div>
+
+                <input class="form-control form-control-sm mb-2" placeholder="제목 (@locale)" @bind="title" />
+
+                <ul class="nav nav-tabs mb-2">
+                    <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>본문 편집</button></li>
+                    <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
+                </ul>
+                @if (tab == "edit")
+                {
+                    <textarea class="form-control font-monospace" rows="14" @bind="body" @bind:event="oninput" placeholder="본문 (마크다운)"></textarea>
+                }
+                else
+                {
+                    <div class="border rounded p-3" style="min-height:14rem">@((MarkupString)PreviewHtml)</div>
+                }
+
+                <div class="d-flex align-items-center gap-2 mt-3">
+                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
+                    <span class="text-muted small">현재 로케일(@locale) 본문을 저장합니다.</span>
+                    @if (msg is not null)
+                    {
+                        <span class="small ms-auto @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<AnnouncementRow> items = [];
+    private bool editing;
+    private Guid? id;
+    private bool published;
+    private string locale = "ko";
+    private string title = "";
+    private string body = "";
+    private string tab = "edit";
+    private string? msg;
+    private bool err;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await LoadAsync(async () => items = await Db.ListAnnouncementsAsync());
+        editing = false;
+    }
+
+    private async Task NewAnnouncement() => await RunAsync(async () =>
+    {
+        id = await Db.CreateAnnouncementAsync(await CurrentActor());
+        published = false;
+        locale = "ko";
+        title = "";
+        body = "";
+        tab = "edit";
+        msg = null;
+        editing = true;
+        items = await Db.ListAnnouncementsAsync();
+    });
+
+    private async Task Edit(AnnouncementRow it)
+    {
+        id = it.Id;
+        published = it.Published;
+        locale = "ko";
+        tab = "edit";
+        msg = null;
+        editing = true;
+        await LoadLocale();
+    }
+
+    private async Task OnLocaleChange(ChangeEventArgs e)
+    {
+        locale = e.Value?.ToString() ?? "ko";
+        msg = null;
+        await LoadLocale();
+    }
+
+    private async Task LoadLocale()
+    {
+        if (id is not { } aid) return;
+        await LoadAsync(async () =>
+        {
+            var (t, b) = await Db.GetAnnouncementLocaleAsync(aid, locale);
+            title = t;
+            body = b;
+        });
+    }
+
+    private void CloseEditor() { editing = false; msg = null; }
+
+    private async Task Save()
+    {
+        if (id is not { } aid) return;
+        if (string.IsNullOrWhiteSpace(title)) { err = true; msg = "제목을 입력하세요."; return; }
+        await RunAsync(async () =>
+        {
+            await Db.SaveAnnouncementLocaleAsync(aid, locale, title, body, await CurrentActor());
+            err = false;
+            msg = "저장됨";
+            items = await Db.ListAnnouncementsAsync();
+        });
+    }
+
+    private async Task TogglePublish(bool publish)
+    {
+        if (id is not { } aid) return;
+        await RunAsync(async () =>
+        {
+            await Db.PublishAnnouncementAsync(aid, publish, await CurrentActor());
+            published = publish;
+            items = await Db.ListAnnouncementsAsync();
+        }, confirm: publish ? "게시하면 (최초 게시 시) 전체 유저에게 끌 수 없는 알림이 발송됩니다. 게시할까요?" : "게시를 취소할까요?");
+    }
+
+    private Task Delete(Guid itemId) => RunAsync(async () =>
+    {
+        await Db.DeleteAnnouncementAsync(itemId, await CurrentActor());
+        if (id == itemId) editing = false;
+        items = await Db.ListAnnouncementsAsync();
+    }, confirm: "이 공지를 삭제할까요? (관련 알림도 삭제)");
+
+    private string PreviewHtml => Admin.Services.SafeMarkdown.ToHtml(body);
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}
