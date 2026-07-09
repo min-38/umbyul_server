@@ -53,6 +53,8 @@ public static class NotificationEndpoints
                         string? link = type switch
                         {
                             "follow" => $"/u/{actor}",
+                            // 공지: 상세로 딥링크(target_id = 공지 id). 시스템 알림(actor 없음). NON-158/166
+                            "announcement" => $"/announcements/{rd.GetString(2)}",
                             // 멘션: 해당 댓글로 딥링크(?c=댓글id → 리뷰 열고 그 댓글로 스크롤, BUG-3).
                             "mention" when !rd.IsDBNull(7) && !rd.IsDBNull(8) && detail is not null =>
                                 $"/{rd.GetString(7)}/{rd.GetString(8)}?c={detail}#review-{rd.GetString(2)}",
