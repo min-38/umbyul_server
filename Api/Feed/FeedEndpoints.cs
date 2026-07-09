@@ -2,6 +2,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
+using Api.Profile;
 using Npgsql;
 
 namespace Api.Feed;
@@ -124,6 +125,11 @@ public static class FeedEndpoints
                 if (genreMap.Count > 0)
                     list = list.Select(x => genreMap.TryGetValue(x.TargetSpotifyId, out var gs) ? x with { Genres = gs } : x).ToList();
 
+                // 작성자 레벨 뱃지(NON-163) — 배치 1회. 실패 시 기본 Lv 1.
+                var levels = await LevelService.LoadLevelsAsync(conn, list.Select(x => Guid.Parse(x.UserId)).Distinct().ToList(), ct);
+                if (levels.Count > 0)
+                    list = list.Select(x => levels.TryGetValue(Guid.Parse(x.UserId), out var lv) ? x with { Level = lv } : x).ToList();
+
                 return ApiResults.Ok("OK", new FeedData(list));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -205,5 +211,6 @@ public sealed record FeedItem(
     string TargetType, string TargetSpotifyId, decimal Score, string Body, DateTimeOffset CreatedAt,
     string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists,
     int Likes, int Dislikes, string? MyReaction, int CommentCount, bool Explicit,
-    IReadOnlyList<string> Genres);
+    IReadOnlyList<string> Genres,
+    int Level = 1); // 작성자 리뷰어 레벨(NON-163)
 public sealed record FeedData(IReadOnlyList<FeedItem> Items);

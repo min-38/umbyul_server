@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using Api.Common;
+using Api.Profile;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -19,7 +20,8 @@ public static class CommentEndpoints
     public sealed record CommentRequest(string? RatingId, string? ParentId, string? Body);
     public sealed record CommentItem(
         string Id, string? ParentId, string UserId, string Username, string? AvatarUrl,
-        string? Body, DateTimeOffset CreatedAt, int LikeCount, bool LikedByMe, double? Score, bool Deleted, bool Edited);
+        string? Body, DateTimeOffset CreatedAt, int LikeCount, bool LikedByMe, double? Score, bool Deleted, bool Edited,
+        int Level = 1); // 작성자 리뷰어 레벨(NON-163)
 
     public static void MapCommentEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -60,8 +62,15 @@ public static class CommentEndpoints
                 cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
 
                 var items = new List<CommentItem>();
-                await using var r = await cmd.ExecuteReaderAsync();
-                while (await r.ReadAsync()) items.Add(Read(r));
+                await using (var r = await cmd.ExecuteReaderAsync())
+                    while (await r.ReadAsync()) items.Add(Read(r));
+
+                // 댓글/대댓글 작성자 레벨 뱃지(NON-163) — 배치 1회. 실패 시 기본 Lv 1.
+                var levels = await LevelService.LoadLevelsAsync(conn, items.Select(x => Guid.Parse(x.UserId)).ToList(), default);
+                if (levels.Count > 0)
+                    for (int i = 0; i < items.Count; i++)
+                        if (levels.TryGetValue(Guid.Parse(items[i].UserId), out var lv)) items[i] = items[i] with { Level = lv };
+
                 return ApiResults.Ok("OK", new { items });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -133,6 +142,10 @@ public static class CommentEndpoints
                         r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetString(5), r.GetFieldValue<DateTimeOffset>(6),
                         0, false, r.IsDBNull(7) ? null : r.GetDouble(7), false, false);
                 }
+
+                // 작성자 레벨 뱃지(NON-163).
+                var lvls = await LevelService.LoadLevelsAsync(conn, new[] { Guid.Parse(item.UserId) }, default);
+                if (lvls.TryGetValue(Guid.Parse(item.UserId), out var mylv)) item = item with { Level = mylv };
 
                 // @멘션 알림 — 본문의 실존 유저에게 적재(대상 정보 있을 때만). 알림 클릭 시 해당 댓글로 딥링크(BUG-3).
                 if (targetType is not null && targetSpotifyId is not null)

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Api.Common;
+using Api.Profile;
 using Npgsql;
 
 namespace Api.Chart;
@@ -171,11 +172,17 @@ public static class ChartEndpoints
                 cmd.Parameters.AddWithValue("off", off);
 
                 var list = new List<UserRankItem>();
-                await using var rd = await cmd.ExecuteReaderAsync(ct);
-                while (await rd.ReadAsync(ct))
-                    list.Add(new UserRankItem(
-                        rd.GetGuid(0).ToString(), rd.GetString(1),
-                        rd.IsDBNull(2) ? null : rd.GetString(2), (int)rd.GetInt64(3)));
+                await using (var rd = await cmd.ExecuteReaderAsync(ct))
+                    while (await rd.ReadAsync(ct))
+                        list.Add(new UserRankItem(
+                            rd.GetGuid(0).ToString(), rd.GetString(1),
+                            rd.IsDBNull(2) ? null : rd.GetString(2), (int)rd.GetInt64(3)));
+
+                // 랭킹 유저 레벨 뱃지(NON-163) — 배치 1회. 실패 시 기본 Lv 1.
+                var levels = await LevelService.LoadLevelsAsync(conn, list.Select(x => Guid.Parse(x.UserId)).ToList(), ct);
+                if (levels.Count > 0)
+                    list = list.Select(x => levels.TryGetValue(Guid.Parse(x.UserId), out var lv) ? x with { Level = lv } : x).ToList();
+
                 return ApiResults.Ok("OK", new UserChartData(list));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -236,7 +243,7 @@ public sealed record ChartItem(
     string TargetType, string SpotifyId, int Count, double Average,
     string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit);
 public sealed record ChartData(IReadOnlyList<ChartItem> Items);
-public sealed record UserRankItem(string UserId, string Username, string? AvatarUrl, int Count);
+public sealed record UserRankItem(string UserId, string Username, string? AvatarUrl, int Count, int Level = 1);
 public sealed record UserChartData(IReadOnlyList<UserRankItem> Items);
 public sealed record ArtistRankItem(string ArtistId, string? ArtistName, int Count, double Average);
 public sealed record ArtistChartData(IReadOnlyList<ArtistRankItem> Items);

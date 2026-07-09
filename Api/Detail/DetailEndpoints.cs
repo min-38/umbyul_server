@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
+using Api.Profile;
 using Api.Spotify;
 using Npgsql;
 
@@ -162,6 +163,12 @@ public static class DetailEndpoints
                         (int)r.GetInt64(10)));
                 }
             }
+
+            // 리뷰 작성자 레벨 뱃지(NON-163) — 배치 1회. 실패 시 기본 Lv 1.
+            var levels = await LevelService.LoadLevelsAsync(conn, reviews.Select(x => Guid.Parse(x.UserId)).ToList(), ct);
+            if (levels.Count > 0)
+                for (int i = 0; i < reviews.Count; i++)
+                    if (levels.TryGetValue(Guid.Parse(reviews[i].UserId), out var lv)) reviews[i] = reviews[i] with { Level = lv };
 
             var summary = reviews.Count > 0
                 ? new RatingSummary(Math.Round((double)(sum / reviews.Count), 2), reviews.Count)

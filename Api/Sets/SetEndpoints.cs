@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Api.Common;
+using Api.Profile;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -27,7 +28,7 @@ public static class SetEndpoints
         string? AlbumId, string? AlbumName, List<TrackArtist>? Artists, bool Explicit = false);
     public sealed record ReorderRequest(List<string>? SpotifyIds);
     public sealed record SetCommentRequest(string? Body);
-    public sealed record SetCommentItem(string Id, string UserId, string Username, string? AvatarUrl, string Body, DateTimeOffset CreatedAt, bool Edited);
+    public sealed record SetCommentItem(string Id, string UserId, string Username, string? AvatarUrl, string Body, DateTimeOffset CreatedAt, bool Edited, int Level = 1);
 
     public sealed record SetTrackItem(
         string SpotifyId, int Position, string? Isrc, string Name, string Artist, string? ImageUrl, string? YoutubeUrl,
@@ -35,7 +36,7 @@ public static class SetEndpoints
     public sealed record SetSummary(
         string Id, string OwnerId, string OwnerUsername, string? OwnerAvatarUrl,
         string Title, string? Note, string? ListenUrl, DateTimeOffset CreatedAt, int TrackCount, DateTimeOffset UpdatedAt,
-        IReadOnlyList<string> Covers, int LikeCount, bool LikedByMe);
+        IReadOnlyList<string> Covers, int LikeCount, bool LikedByMe, int OwnerLevel = 1);
     public sealed record SetDetail(SetSummary Set, IReadOnlyList<SetTrackItem> Tracks);
 
     public static void MapSetEndpoints(this WebApplication app, string? dbConnString)
@@ -117,6 +118,10 @@ public static class SetEndpoints
                             rd.GetFieldValue<DateTimeOffset>(7), rd.GetInt32(8), rd.GetFieldValue<DateTimeOffset>(9), rd.IsDBNull(10) ? Array.Empty<string>() : rd.GetFieldValue<string[]>(10), rd.GetInt32(11), rd.GetBoolean(12));
                 }
                 if (summary is null) return ApiResults.NotFound("SET_NOT_FOUND");
+
+                // 소유자 레벨 뱃지(NON-163).
+                var ownerLevels = await LevelService.LoadLevelsAsync(conn, new[] { Guid.Parse(summary.OwnerId) }, default);
+                if (ownerLevels.TryGetValue(Guid.Parse(summary.OwnerId), out var olv)) summary = summary with { OwnerLevel = olv };
 
                 var tracks = new List<SetTrackItem>();
                 await using (var cmd = new NpgsqlCommand(
@@ -473,11 +478,18 @@ public static class SetEndpoints
                     """, conn);
                 cmd.Parameters.AddWithValue("sid", sid);
                 var items = new List<SetCommentItem>();
-                await using var rd = await cmd.ExecuteReaderAsync();
-                while (await rd.ReadAsync())
-                    items.Add(new SetCommentItem(
-                        rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
-                        rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5), rd.GetBoolean(6)));
+                await using (var rd = await cmd.ExecuteReaderAsync())
+                    while (await rd.ReadAsync())
+                        items.Add(new SetCommentItem(
+                            rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
+                            rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5), rd.GetBoolean(6)));
+
+                // 믹스 댓글 작성자 레벨 뱃지(NON-163) — 배치 1회. 실패 시 기본 Lv 1.
+                var levels = await LevelService.LoadLevelsAsync(conn, items.Select(x => Guid.Parse(x.UserId)).ToList(), default);
+                if (levels.Count > 0)
+                    for (int i = 0; i < items.Count; i++)
+                        if (levels.TryGetValue(Guid.Parse(items[i].UserId), out var lv)) items[i] = items[i] with { Level = lv };
+
                 return ApiResults.Ok("OK", new { items });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -509,11 +521,17 @@ public static class SetEndpoints
                 cmd.Parameters.AddWithValue("sid", sid);
                 cmd.Parameters.AddWithValue("uid", uid);
                 cmd.Parameters.AddWithValue("body", body);
-                await using var rd = await cmd.ExecuteReaderAsync();
-                await rd.ReadAsync();
-                var item = new SetCommentItem(
-                    rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
-                    rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5), false);
+                SetCommentItem item;
+                await using (var rd = await cmd.ExecuteReaderAsync())
+                {
+                    await rd.ReadAsync();
+                    item = new SetCommentItem(
+                        rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
+                        rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetFieldValue<DateTimeOffset>(5), false);
+                }
+                // 작성자 레벨 뱃지(NON-163).
+                var lvls = await LevelService.LoadLevelsAsync(conn, new[] { Guid.Parse(item.UserId) }, default);
+                if (lvls.TryGetValue(Guid.Parse(item.UserId), out var mylv)) item = item with { Level = mylv };
                 return ApiResults.Created("CREATED", item);
             }
             catch (PostgresException ex) when (ex.SqlState == "23503") { return ApiResults.BadRequest("INVALID_TARGET"); }
