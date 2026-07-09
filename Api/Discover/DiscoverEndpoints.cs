@@ -50,8 +50,10 @@ public static class DiscoverEndpoints
                 var recommend = await LoadRecommendAsync(conn, me, ct);
                 // 오늘의 음악(NON-154): 날짜 기반 큐레이션 픽. 실패·부재 시 null → 프론트에서 섹션 숨김.
                 var dailyPick = await LoadDailyPickAsync(conn, spotify, ct);
+                // '당신이 좋아하는 장르들'(설정 선호 장르 기반, 내 미리뷰 대상). 선호 미설정·데이터 없으면 빈 배열 → 섹션 숨김.
+                var preferredGenreItems = me is { } pgu ? await LoadPreferredGenreItemsAsync(conn, pgu, ct) : [];
 
-                return ApiResults.Ok("OK", new DiscoverData(rising, fresh, myRecent, recommend, dailyPick));
+                return ApiResults.Ok("OK", new DiscoverData(rising, fresh, myRecent, recommend, dailyPick, preferredGenreItems));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -199,6 +201,14 @@ public static class DiscoverEndpoints
         }
         if (result.Count < target) TopUp(await LoadPopularAsync(conn, me, ct)); // 폴백: 전체 인기
         return result;
+    }
+
+    // '당신이 좋아하는 장르들'(NON-150/155): 설정에서 고른 선호 장르로 합의 태깅된 미리뷰 대상. 선호 없으면 빈 배열.
+    private static async Task<List<DiscoverItem>> LoadPreferredGenreItemsAsync(NpgsqlConnection conn, Guid uid, CancellationToken ct)
+    {
+        var genres = await ExplicitPreferredGenresAsync(conn, uid, ct);
+        if (genres.Count == 0) return [];
+        return await LoadByGenresAsync(conn, uid, genres, ct);
     }
 
     // CF(NON-83): 내가 리뷰한 대상(시드)을 높게 준 다른 유저=이웃, 그 이웃들이 높게 준 미평가 대상을 추천.
@@ -485,7 +495,8 @@ public sealed record DiscoverData(
     IReadOnlyList<DiscoverItem> New,
     IReadOnlyList<DiscoverItem> MyRecent,
     IReadOnlyList<DiscoverItem> Recommend,
-    DailyPickItem? DailyPick);
+    DailyPickItem? DailyPick,
+    IReadOnlyList<DiscoverItem> PreferredGenreItems);
 
 // Genre 브라우즈(NON-84). 부모 장르 페이지: 롤업 추천(Top) + 서브장르별 목록(Subs).
 public sealed record GenreRef(int Id, string Slug, string Name);
