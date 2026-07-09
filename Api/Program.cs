@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Api.Account;
+using Api.Announcements;
 using Api.Auth;
 using Api.Chart;
 using Api.Common;
@@ -265,6 +266,9 @@ app.MapConsentEndpoints(dbConnString);
 
 // FAQ (/faq) — 공개 조회 (NON-73)
 app.MapFaqEndpoints(dbConnString);
+
+// 공지사항 (/announcements) — 공개 조회 (NON-158)
+app.MapAnnouncementEndpoints(dbConnString);
 
 // 문의 (/inquiries) — 공개 접수 (NON-76)
 app.MapInquiryEndpoints(dbConnString);
