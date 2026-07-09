@@ -16,6 +16,7 @@ public sealed record ProfileReview(
 public sealed record UserProfile(
     string Id, string Username, string? AvatarUrl, DateTimeOffset JoinedAt,
     int ReviewCount, int TotalLikes,
+    int Xp, int Level, int XpIntoLevel, int XpForLevel,
     int FollowerCount, int FollowingCount, bool IsFollowing,
     IReadOnlyList<ProfileReview> Reviews, bool Blocked);
 
@@ -80,8 +81,11 @@ public static class PublicProfileEndpoints
 
                 if (blockedByThem && !iBlocked) return ApiResults.NotFound("USER_NOT_FOUND");
                 if (iBlocked)
+                {
+                    var (bl, bxp, bInto, bFor) = ReviewerLevel.Compute(0, 0, 0);
                     return ApiResults.Ok("OK", new UserProfile(
-                        uid.ToString(), uname, avatar, joined, 0, 0, 0, 0, false, Array.Empty<ProfileReview>(), true));
+                        uid.ToString(), uname, avatar, joined, 0, 0, bxp, bl, bInto, bFor, 0, 0, false, Array.Empty<ProfileReview>(), true));
+                }
             }
 
             // 작성 리뷰 + 받은 좋아요 수. 마이그레이션(0006/0007) 미적용 등 실패 시 리뷰 없이 프로필만.
@@ -119,6 +123,9 @@ public static class PublicProfileEndpoints
             var active = rows.Where(x => !x.Deleted).ToList();
             var totalLikes = active.Sum(x => x.Likes);
             var (followers, following, isFollowing) = await LoadFollowStatsAsync(conn, uid, viewer, ct);
+            // 리뷰어 레벨(NON-153): XP = 10*리뷰 + 1*받은따봉 + 15*'픽 당일' 리뷰. 새 테이블 없이 집계.
+            var dailyPickReviews = await LoadDailyPickReviewsAsync(conn, uid, ct);
+            var (level, xp, xpInto, xpFor) = ReviewerLevel.Compute(active.Count, totalLikes, dailyPickReviews);
             var display = await ResolveAsync(spotify, active, ct);
 
             var reviews = rows.Select(x =>
@@ -128,8 +135,32 @@ public static class PublicProfileEndpoints
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(
-                uid.ToString(), uname, avatar, joined, active.Count, totalLikes, followers, following, isFollowing, reviews, false));
+                uid.ToString(), uname, avatar, joined, active.Count, totalLikes, xp, level, xpInto, xpFor,
+                followers, following, isFollowing, reviews, false));
         });
+    }
+
+    // '픽 당일' 리뷰 수(NON-153) — 리뷰 작성일이 그 대상의 daily_picks.pick_date 와 같은 것만.
+    // daily_picks 미존재(0061 미적용) 등 실패 시 0.
+    private static async Task<int> LoadDailyPickReviewsAsync(NpgsqlConnection conn, Guid uid, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                select count(*)
+                from public.ratings r
+                join public.daily_picks dp
+                  on dp.target_type = r.target_type
+                 and dp.target_spotify_id = r.target_spotify_id
+                 and dp.pick_date = (r.created_at)::date
+                where r.user_id = @uid and r.deleted_at is null
+                """, conn);
+            cmd.Parameters.AddWithValue("uid", uid);
+            var n = await cmd.ExecuteScalarAsync(ct);
+            return n is long l ? (int)l : 0;
+        }
+        catch (NpgsqlException) { return 0; }
     }
 
     // 팔로워/팔로잉 수 + 뷰어의 팔로우 여부. follows 미존재(마이그레이션 전)면 0/false.
