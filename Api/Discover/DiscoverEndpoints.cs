@@ -289,7 +289,7 @@ public static class DiscoverEndpoints
 
         var pick = await ReadActivePickAsync(conn, ct);
         if (pick is null) return null;
-        var (type, spotifyId, note, youtubeUrl) = pick.Value;
+        var (type, spotifyId, note) = pick.Value;
 
         string? name, artist, image, spotifyUrl, isrc = null, upc = null;
         IReadOnlyList<ArtistRef> artists;
@@ -315,37 +315,28 @@ public static class DiscoverEndpoints
         catch (HttpRequestException) { return null; }
         catch (JsonException) { return null; }
 
-        // 우리 평점·크라우드 장르를 붙임(카드의 별점·장르 칩용). 실패해도 픽은 살린다.
+        // 우리 평점·크라우드 장르 + 대상별 YouTube 링크(NON-154)를 붙임. 실패해도 픽은 살린다.
         var (average, count, genres) = await LoadPickStatsAsync(conn, type, spotifyId, ct);
+        var youtubeUrl = await TargetLinks.YoutubeAsync(conn, type, spotifyId, ct);
         return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note,
             average, count, genres, spotifyUrl, isrc, upc, youtubeUrl);
     }
 
-    // 활성 픽(pick_date <= 오늘 중 최신) 1건 읽기. youtube_url(0062) 없으면 없이 재시도, daily_picks(0061) 없으면 null.
-    private static async Task<(string Type, string SpotifyId, string? Note, string? YoutubeUrl)?> ReadActivePickAsync(
+    // 활성 픽(pick_date <= 오늘 중 최신) 1건 읽기. daily_picks(0061) 없으면 null.
+    private static async Task<(string Type, string SpotifyId, string? Note)?> ReadActivePickAsync(
         NpgsqlConnection conn, CancellationToken ct)
     {
-        for (var withYoutube = true; ; withYoutube = false)
+        try
         {
-            try
-            {
-                var col = withYoutube ? "youtube_url" : "null::text";
-                await using var cmd = new NpgsqlCommand(
-                    $"select target_type, target_spotify_id, note, {col} from public.daily_picks where pick_date <= current_date order by pick_date desc limit 1", conn);
-                await using var r = await cmd.ExecuteReaderAsync(ct);
-                if (!await r.ReadAsync(ct)) return null;
-                return (r.GetString(0), r.GetString(1),
-                    r.IsDBNull(2) ? null : r.GetString(2),
-                    r.IsDBNull(3) ? null : r.GetString(3));
-            }
-            catch (PostgresException e) when (withYoutube && e.SqlState == PostgresErrorCodes.UndefinedColumn)
-            {
-                continue; // 마이그레이션 0062 전 — youtube_url 없이 재시도
-            }
-            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
-            {
-                return null; // 마이그레이션 0061 전
-            }
+            await using var cmd = new NpgsqlCommand(
+                "select target_type, target_spotify_id, note from public.daily_picks where pick_date <= current_date order by pick_date desc limit 1", conn);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) return null;
+            return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2));
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+        {
+            return null; // 마이그레이션 0061 전
         }
     }
 

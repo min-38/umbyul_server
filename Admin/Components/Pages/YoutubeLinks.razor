@@ -1,0 +1,163 @@
+@page "/youtube-links"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>곡 YouTube 링크</PageTitle>
+
+<div class="page-header">
+    <h1>곡 YouTube 링크</h1>
+    <p class="subtitle">곡/앨범별 YouTube 링크. 링크가 있으면 상세 페이지·오늘의 음악 카드에 YouTube 아이콘이 뜹니다. 대상당 링크 1개.</p>
+</div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+@if (notice is not null)
+{
+    <div class="alert @(noticeErr ? "alert-danger" : "alert-success") py-2">@notice</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body d-flex align-items-center gap-2 py-2">
+            <span class="text-muted small">@(links.Count)개 링크</span>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 링크</button>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:5rem">종류</th><th>Spotify ID</th><th>YouTube</th><th style="width:4rem"></th></tr></thead>
+            <tbody>
+                @if (links.Count == 0)
+                {
+                    <tr><td colspan="4" class="text-center text-muted py-4">링크가 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var row in links)
+                    {
+                        <tr class="@(editing && !isNew && row.TargetType == targetType && row.SpotifyId == spotifyId ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(row)">
+                            <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
+                            <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.SpotifyId</td>
+                            <td class="text-truncate" style="max-width:20rem"><a href="@row.YoutubeUrl" target="_blank" rel="noopener">@row.YoutubeUrl</a></td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" @onclick:stopPropagation disabled="@Busy">삭제</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (editing)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    <span class="badge @(isNew ? "bg-primary" : "bg-secondary")">@(isNew ? "새 링크" : "편집")</span>
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">종류</span>
+                        <select class="form-select form-select-sm" style="width:auto" @bind="targetType" disabled="@(!isNew)">
+                            <option value="track">곡</option>
+                            <option value="album">앨범</option>
+                        </select>
+                    </span>
+                    <input class="form-control form-control-sm font-monospace" style="width:260px" placeholder="Spotify ID" @bind="spotifyId" disabled="@(!isNew)" />
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
+                </div>
+                <input class="form-control form-control-sm mb-3" placeholder="YouTube URL" @bind="url" />
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
+                    @if (msg is not null)
+                    {
+                        <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                    @if (!isNew)
+                    {
+                        <span class="text-muted small">종류·ID는 대상 키라 편집 시 고정. 바꾸려면 삭제 후 새로 추가.</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<YoutubeLinkAdminRow> links = [];
+    private bool editing;
+    private bool isNew;
+    private string targetType = "track";
+    private string spotifyId = "";
+    private string url = "";
+    private string? msg;
+    private bool err;
+    private string? notice;
+    private bool noticeErr;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load() => await LoadAsync(async () => links = await Db.ListYoutubeLinksAsync());
+
+    private void NewItem()
+    {
+        editing = true;
+        isNew = true;
+        targetType = "track";
+        spotifyId = "";
+        url = "";
+        msg = null;
+    }
+
+    private void Edit(YoutubeLinkAdminRow row)
+    {
+        editing = true;
+        isNew = false;
+        targetType = row.TargetType;
+        spotifyId = row.SpotifyId;
+        url = row.YoutubeUrl;
+        msg = null;
+    }
+
+    private void CloseEditor() { editing = false; msg = null; }
+
+    private async Task Save()
+    {
+        if (string.IsNullOrWhiteSpace(spotifyId)) { err = true; msg = "Spotify ID를 입력하세요."; return; }
+        if (string.IsNullOrWhiteSpace(url)) { err = true; msg = "YouTube URL을 입력하세요."; return; }
+        await RunAsync(async () =>
+        {
+            var (ok, error) = await Db.SaveYoutubeLinkAsync(targetType, spotifyId, url, await CurrentActor());
+            if (!ok) { err = true; msg = error ?? "저장하지 못했습니다."; return; }
+            err = false; msg = "저장됨";
+            notice = null;
+            links = await Db.ListYoutubeLinksAsync();
+            editing = false;
+        });
+    }
+
+    private Task Delete(YoutubeLinkAdminRow row) => RunAsync(async () =>
+    {
+        var (ok, error) = await Db.DeleteYoutubeLinkAsync(row.TargetType, row.SpotifyId, await CurrentActor());
+        if (!ok) { noticeErr = true; notice = error; return; }
+        noticeErr = false; notice = $"{row.SpotifyId} 링크 삭제됨";
+        if (!isNew && targetType == row.TargetType && spotifyId == row.SpotifyId) editing = false;
+        links = await Db.ListYoutubeLinksAsync();
+    }, confirm: $"{row.SpotifyId} YouTube 링크를 삭제할까요?");
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}

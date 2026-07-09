@@ -39,7 +39,8 @@ public sealed record TrackDetail(
     string? Copyright,
     bool Explicit,
     RatingSummary Rating,
-    IReadOnlyList<ReviewItem> Reviews);
+    IReadOnlyList<ReviewItem> Reviews,
+    string? YoutubeUrl);
 
 public sealed record AlbumDetail(
     string SpotifyId,
@@ -54,4 +55,5 @@ public sealed record AlbumDetail(
     int TotalTracks,
     IReadOnlyList<TrackRef> Tracks,
     RatingSummary Rating,
-    IReadOnlyList<ReviewItem> Reviews);
+    IReadOnlyList<ReviewItem> Reviews,
+    string? YoutubeUrl);
