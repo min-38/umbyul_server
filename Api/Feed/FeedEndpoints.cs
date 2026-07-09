@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
@@ -12,7 +13,7 @@ public static class FeedEndpoints
 {
     public static void MapFeedEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/feed", async (string? sort, string? scope, int? offset, int? limit, ClaimsPrincipal user, CancellationToken ct) =>
+        app.MapGet("/feed", async (string? sort, string? scope, string? genre, int? offset, int? limit, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             var me = Me(user);
@@ -39,6 +40,26 @@ public static class FeedEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync(ct);
+
+                // 내 선호 장르만 보기(NON-88/150). 선호 장르로 태깅된 대상의 리뷰만. 선호 없음·테이블 부재 시 필터 미적용.
+                int[] prefGenres = [];
+                if (genre == "preferred" && me is { } gme)
+                {
+                    try
+                    {
+                        await using var pc = new NpgsqlCommand("select genre_id from public.user_genre_preferences where user_id = @me", conn);
+                        pc.Parameters.AddWithValue("me", gme);
+                        var pl = new List<int>();
+                        await using var pr = await pc.ExecuteReaderAsync(ct);
+                        while (await pr.ReadAsync(ct)) pl.Add(pr.GetInt32(0));
+                        prefGenres = pl.ToArray();
+                    }
+                    catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable) { }
+                }
+                var genreClause = prefGenres.Length > 0
+                    ? "and exists (select 1 from public.genre_tags gt where gt.target_type = r.target_type and gt.target_spotify_id = r.target_spotify_id and gt.genre_id = any(@prefgenres))"
+                    : "";
+
                 await using var cmd = new NpgsqlCommand(
                     $"""
                     with rx as (
@@ -58,7 +79,7 @@ public static class FeedEndpoints
                       from public.ratings r
                       join public.users u on u.id = r.user_id
                       left join rx on rx.rating_id = r.id
-                      where r.review is not null and length(trim(r.review)) > 0 and r.target_spotify_id is not null and r.deleted_at is null {scopeClause}
+                      where r.review is not null and length(trim(r.review)) > 0 and r.target_spotify_id is not null and r.deleted_at is null {scopeClause} {genreClause}
                         and not exists (select 1 from public.feed_dismissals d where d.user_id = @me and d.rating_id = r.id)
                         and not exists (select 1 from public.blocks b where (b.blocker_id = @me and b.blocked_id = r.user_id) or (b.blocker_id = r.user_id and b.blocked_id = @me))
                     )
@@ -80,20 +101,29 @@ public static class FeedEndpoints
                 cmd.Parameters.AddWithValue("off", off);
                 // @me 는 scopeClause · my_reaction · dismissal 필터에서 항상 참조 → 비로그인은 NULL 로 바인딩.
                 cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
+                if (prefGenres.Length > 0) cmd.Parameters.AddWithValue("prefgenres", prefGenres);
 
                 var list = new List<FeedItem>();
-                await using var rd = await cmd.ExecuteReaderAsync(ct);
-                while (await rd.ReadAsync(ct))
-                    list.Add(new FeedItem(
-                        rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
-                        rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetString(5),
-                        rd.GetDecimal(6), rd.GetString(7), rd.GetFieldValue<DateTimeOffset>(8),
-                        rd.IsDBNull(9) ? null : rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10),
-                        rd.IsDBNull(11) ? null : rd.GetString(11),
-                        rd.IsDBNull(12) ? null : ArtistRef.Parse(rd.GetString(12)),
-                        (int)rd.GetInt64(13), (int)rd.GetInt64(14),
-                        rd.IsDBNull(15) ? null : rd.GetString(15),
-                        (int)rd.GetInt64(16), rd.GetBoolean(17)));
+                await using (var rd = await cmd.ExecuteReaderAsync(ct))
+                {
+                    while (await rd.ReadAsync(ct))
+                        list.Add(new FeedItem(
+                            rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
+                            rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetString(5),
+                            rd.GetDecimal(6), rd.GetString(7), rd.GetFieldValue<DateTimeOffset>(8),
+                            rd.IsDBNull(9) ? null : rd.GetString(9), rd.IsDBNull(10) ? null : rd.GetString(10),
+                            rd.IsDBNull(11) ? null : rd.GetString(11),
+                            rd.IsDBNull(12) ? null : ArtistRef.Parse(rd.GetString(12)),
+                            (int)rd.GetInt64(13), (int)rd.GetInt64(14),
+                            rd.IsDBNull(15) ? null : rd.GetString(15),
+                            (int)rd.GetInt64(16), rd.GetBoolean(17), Array.Empty<string>()));
+                }
+
+                // 대상별 상위 장르 칩(NON-88/122). 크라우드 태깅 상위 2개(투표순). 리더 닫은 뒤 배치 조회.
+                var genreMap = await LoadFeedGenresAsync(conn, list.Select(x => x.TargetSpotifyId).Distinct().ToArray(), ct);
+                if (genreMap.Count > 0)
+                    list = list.Select(x => genreMap.TryGetValue(x.TargetSpotifyId, out var gs) ? x with { Genres = gs } : x).ToList();
+
                 return ApiResults.Ok("OK", new FeedData(list));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
@@ -131,6 +161,41 @@ public static class FeedEndpoints
     public sealed record DismissRequest(string? RatingId);
 
 
+    // 피드 대상별 상위 장르(투표순 2개). 크라우드 태깅(genre_tags). 테이블 없으면 빈 맵.
+    private static async Task<Dictionary<string, IReadOnlyList<string>>> LoadFeedGenresAsync(NpgsqlConnection conn, string[] spotifyIds, CancellationToken ct)
+    {
+        var map = new Dictionary<string, IReadOnlyList<string>>();
+        if (spotifyIds.Length == 0) return map;
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                select target_spotify_id, name from (
+                  select gt.target_spotify_id, g.name,
+                         row_number() over (partition by gt.target_spotify_id order by count(*) desc, g.sort_order) rn
+                  from public.genre_tags gt
+                  join public.genres g on g.id = gt.genre_id
+                  where gt.target_spotify_id = any(@ids)
+                  group by gt.target_spotify_id, g.id, g.name, g.sort_order
+                ) x
+                where x.rn <= 2
+                order by x.target_spotify_id, x.rn
+                """, conn);
+            cmd.Parameters.AddWithValue("ids", spotifyIds);
+            var tmp = new Dictionary<string, List<string>>();
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                var id = rd.GetString(0);
+                if (!tmp.TryGetValue(id, out var l)) { l = new List<string>(); tmp[id] = l; }
+                l.Add(rd.GetString(1));
+            }
+            foreach (var kv in tmp) map[kv.Key] = kv.Value;
+            return map;
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable) { return map; }
+    }
+
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
 }
@@ -139,5 +204,6 @@ public sealed record FeedItem(
     string Id, string UserId, string Username, string? AvatarUrl,
     string TargetType, string TargetSpotifyId, decimal Score, string Body, DateTimeOffset CreatedAt,
     string? Name, string? Artist, string? ImageUrl, IReadOnlyList<ArtistRef>? Artists,
-    int Likes, int Dislikes, string? MyReaction, int CommentCount, bool Explicit);
+    int Likes, int Dislikes, string? MyReaction, int CommentCount, bool Explicit,
+    IReadOnlyList<string> Genres);
 public sealed record FeedData(IReadOnlyList<FeedItem> Items);
