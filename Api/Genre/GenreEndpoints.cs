@@ -8,9 +8,6 @@ namespace Api.Genre;
 /// 목록·집계는 공개, 태깅은 로그인 + 제재 게이팅. 라이선스 0 — 전부 우리 소유 데이터.
 public static class GenreEndpoints
 {
-    /// 대표 장르로 공개하려면 최소 이만큼의 표(합의)가 필요. 1표(한 명)로는 장르를 정의하지 않는다.
-    private const int MinConsensusVotes = 2;
-
     public sealed record GenreItem(int Id, string Slug, string Name, int? ParentId, int SortOrder);
     public sealed record GenreCount(int Id, string Name, string? ParentName, int Count);
     public sealed record GenresForData(IReadOnlyList<GenreCount> Top, IReadOnlyList<int> Mine);
@@ -59,14 +56,12 @@ public static class GenreEndpoints
                     left join public.genres p on p.id = g.parent_id
                     where t.target_type = @tt and t.target_spotify_id = @id
                     group by g.id, g.name, p.name
-                    having count(*) >= @min
                     order by n desc, g.sort_order
                     limit 12
                     """, conn))
                 {
                     cmd.Parameters.AddWithValue("tt", type);
                     cmd.Parameters.AddWithValue("id", id);
-                    cmd.Parameters.AddWithValue("min", MinConsensusVotes);
                     await using var r = await cmd.ExecuteReaderAsync(ct);
                     while (await r.ReadAsync(ct))
                         top.Add(new GenreCount(r.GetInt32(0), r.GetString(1),
