@@ -15,13 +15,6 @@ public static class SetEndpoints
 {
     public const int MaxTracks = 15;
 
-    private static readonly Regex YoutubePattern =
-        new(@"^https?://([\w-]+\.)?(youtube\.com|youtu\.be)/\S+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-    // null/빈값(링크 없음/제거)이면 통과, 값 있으면 유튜브 URL이어야 함.
-    private static bool ValidYoutube(string? url) =>
-        string.IsNullOrWhiteSpace(url) || YoutubePattern.IsMatch(url.Trim());
-
     // 듣기 링크: null/빈값이면 통과, 값 있으면 http(s) 절대 URL이어야 함 (javascript:/data: 저장 차단 — SEC-A-6/SEC-W-1).
     private static bool ValidListenUrl(string? url) =>
         string.IsNullOrWhiteSpace(url) ||
@@ -30,9 +23,8 @@ public static class SetEndpoints
     public sealed record TrackArtist(string Id, string Name);
     public sealed record SetCreateRequest(string? Title, string? Note, string? ListenUrl);
     public sealed record TrackAddRequest(
-        string? SpotifyId, string? Isrc, string? Name, string? Artist, string? ImageUrl, string? YoutubeUrl,
+        string? SpotifyId, string? Isrc, string? Name, string? Artist, string? ImageUrl,
         string? AlbumId, string? AlbumName, List<TrackArtist>? Artists, bool Explicit = false);
-    public sealed record TrackLinkRequest(string? YoutubeUrl);
     public sealed record ReorderRequest(List<string>? SpotifyIds);
     public sealed record SetCommentRequest(string? Body);
     public sealed record SetCommentItem(string Id, string UserId, string Username, string? AvatarUrl, string Body, DateTimeOffset CreatedAt, bool Edited);
@@ -129,7 +121,7 @@ public static class SetEndpoints
                 var tracks = new List<SetTrackItem>();
                 await using (var cmd = new NpgsqlCommand(
                     """
-                    select t.spotify_id, t.position, t.isrc, t.name, t.artist, t.image_url, t.youtube_url,
+                    select t.spotify_id, t.position, t.isrc, t.name, t.artist, t.image_url, null::text as youtube_url,
                            t.album_id, t.album_name, t.artists, t.explicit,
                            r.score::float8 as my_score, r.review as my_review
                     from public.set_tracks t
@@ -151,6 +143,24 @@ public static class SetEndpoints
                             ParseArtists(rd.IsDBNull(9) ? null : rd.GetString(9)),
                             rd.GetBoolean(10),
                             rd.IsDBNull(11) ? null : rd.GetDouble(11), rd.IsDBNull(12) ? null : rd.GetString(12)));
+                }
+
+                // 트랙 YouTube는 곡 자체의 전역 링크(target_youtube_links, ISRC 기준)에서 해석 — DJ 입력 없음(NON-154).
+                var isrcs = tracks.Where(t => t.Isrc is { Length: > 0 }).Select(t => t.Isrc!).Distinct().ToArray();
+                if (isrcs.Length > 0)
+                {
+                    var yt = new Dictionary<string, string>();
+                    try
+                    {
+                        await using var yc = new NpgsqlCommand(
+                            "select target_id, youtube_url from public.target_youtube_links where target_type = 'track' and target_id = any(@ids)", conn);
+                        yc.Parameters.AddWithValue("ids", isrcs);
+                        await using var yr = await yc.ExecuteReaderAsync();
+                        while (await yr.ReadAsync()) yt[yr.GetString(0)] = yr.GetString(1);
+                    }
+                    catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable) { /* 마이그레이션 0063 전 */ }
+                    if (yt.Count > 0)
+                        tracks = tracks.Select(t => t.Isrc is { } i && yt.TryGetValue(i, out var u) ? t with { YoutubeUrl = u } : t).ToList();
                 }
                 return ApiResults.Ok("OK", new SetDetail(summary, tracks));
             }
@@ -313,7 +323,6 @@ public static class SetEndpoints
             if (!Guid.TryParse(id, out var sid)) return ApiResults.BadRequest("INVALID_TARGET");
             if (string.IsNullOrEmpty(req.SpotifyId) || string.IsNullOrEmpty(req.Name) || string.IsNullOrEmpty(req.Artist))
                 return ApiResults.BadRequest("INVALID_TARGET");
-            if (!ValidYoutube(req.YoutubeUrl)) return ApiResults.BadRequest("INVALID_YOUTUBE_URL");
 
             try
             {
@@ -325,9 +334,9 @@ public static class SetEndpoints
 
                 await using var cmd = new NpgsqlCommand(
                     """
-                    insert into public.set_tracks (set_id, spotify_id, position, isrc, name, artist, image_url, youtube_url, album_id, album_name, artists, explicit)
+                    insert into public.set_tracks (set_id, spotify_id, position, isrc, name, artist, image_url, album_id, album_name, artists, explicit)
                     values (@sid, @sp, (select coalesce(max(position), -1) + 1 from public.set_tracks where set_id = @sid),
-                            @isrc, @name, @artist, @img, @yt, @albid, @albname, @artists, @exp)
+                            @isrc, @name, @artist, @img, @albid, @albname, @artists, @exp)
                     on conflict (set_id, spotify_id) do nothing
                     """, conn);
                 cmd.Parameters.AddWithValue("sid", sid);
@@ -336,7 +345,6 @@ public static class SetEndpoints
                 cmd.Parameters.AddWithValue("name", Trunc(req.Name, 300)!);
                 cmd.Parameters.AddWithValue("artist", Trunc(req.Artist, 300)!);
                 cmd.Parameters.Add(new NpgsqlParameter("img", NpgsqlDbType.Text) { Value = (object?)req.ImageUrl ?? DBNull.Value });
-                cmd.Parameters.Add(new NpgsqlParameter("yt", NpgsqlDbType.Text) { Value = (object?)Trunc(req.YoutubeUrl?.Trim(), 500) ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("albid", NpgsqlDbType.Text) { Value = (object?)req.AlbumId ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("albname", NpgsqlDbType.Text) { Value = (object?)Trunc(req.AlbumName, 300) ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)(req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null) ?? DBNull.Value });
@@ -380,31 +388,6 @@ public static class SetEndpoints
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 
-        // 트랙의 유튜브 링크 설정/제거(본인). 빈 값이면 제거.
-        me.MapPost("/sets/{id}/tracks/{spotifyId}/link", async (string id, string spotifyId, TrackLinkRequest req, ClaimsPrincipal user) =>
-        {
-            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
-            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
-            if (!Guid.TryParse(id, out var sid)) return ApiResults.BadRequest("INVALID_TARGET");
-            if (!ValidYoutube(req.YoutubeUrl)) return ApiResults.BadRequest("INVALID_YOUTUBE_URL");
-            try
-            {
-                await using var conn = new NpgsqlConnection(dbConnString);
-                await conn.OpenAsync();
-                if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
-                if (!await OwnsAsync(conn, sid, uid)) return ApiResults.NotFound("SET_NOT_FOUND");
-                await using var cmd = new NpgsqlCommand(
-                    "update public.set_tracks set youtube_url = @yt where set_id = @sid and spotify_id = @sp", conn);
-                cmd.Parameters.Add(new NpgsqlParameter("yt", NpgsqlDbType.Text) { Value = (object?)Trunc(req.YoutubeUrl?.Trim(), 500) ?? DBNull.Value });
-                cmd.Parameters.AddWithValue("sid", sid);
-                cmd.Parameters.AddWithValue("sp", spotifyId);
-                await cmd.ExecuteNonQueryAsync();
-                await TouchAsync(conn, sid);
-                return ApiResults.Ok("OK");
-            }
-            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
-        });
-
         // 트랙 삭제.
         me.MapDelete("/sets/{id}/tracks/{spotifyId}", async (string id, string spotifyId, ClaimsPrincipal user) =>
         {
@@ -435,7 +418,6 @@ public static class SetEndpoints
             if (!Guid.TryParse(id, out var sid)) return ApiResults.BadRequest("INVALID_TARGET");
             if (string.IsNullOrEmpty(req.SpotifyId) || string.IsNullOrEmpty(req.Name) || string.IsNullOrEmpty(req.Artist))
                 return ApiResults.BadRequest("INVALID_TARGET");
-            if (!ValidYoutube(req.YoutubeUrl)) return ApiResults.BadRequest("INVALID_YOUTUBE_URL");
 
             try
             {
@@ -448,7 +430,7 @@ public static class SetEndpoints
                     """
                     update public.set_tracks
                     set spotify_id = @new, isrc = @isrc, name = @name, artist = @artist, image_url = @img,
-                        youtube_url = @yt, album_id = @albid, album_name = @albname, artists = @artists, explicit = @exp
+                        album_id = @albid, album_name = @albname, artists = @artists, explicit = @exp
                     where set_id = @sid and spotify_id = @old
                     """, conn);
                 cmd.Parameters.AddWithValue("new", req.SpotifyId);
@@ -458,7 +440,6 @@ public static class SetEndpoints
                 cmd.Parameters.AddWithValue("name", Trunc(req.Name, 300)!);
                 cmd.Parameters.AddWithValue("artist", Trunc(req.Artist, 300)!);
                 cmd.Parameters.Add(new NpgsqlParameter("img", NpgsqlDbType.Text) { Value = (object?)req.ImageUrl ?? DBNull.Value });
-                cmd.Parameters.Add(new NpgsqlParameter("yt", NpgsqlDbType.Text) { Value = (object?)Trunc(req.YoutubeUrl?.Trim(), 500) ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("albid", NpgsqlDbType.Text) { Value = (object?)req.AlbumId ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("albname", NpgsqlDbType.Text) { Value = (object?)Trunc(req.AlbumName, 300) ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)(req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null) ?? DBNull.Value });
