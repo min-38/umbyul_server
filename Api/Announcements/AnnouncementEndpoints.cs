@@ -23,8 +23,8 @@ public static class AnnouncementEndpoints
                     from public.announcements a
                     join lateral (
                         select title from public.announcement_locales l
-                        where l.announcement_id = a.id and l.locale in (@loc, 'en')
-                        order by (l.locale = @loc) desc
+                        where l.announcement_id = a.id
+                        order by (l.locale = @loc) desc, (l.locale = 'en') desc, l.locale
                         limit 1
                     ) l on true
                     where a.published
@@ -60,9 +60,9 @@ public static class AnnouncementEndpoints
                     """
                     select l.locale, l.title, l.body, a.published_at
                     from public.announcements a
-                    join public.announcement_locales l on l.announcement_id = a.id and l.locale in (@loc, 'en')
+                    join public.announcement_locales l on l.announcement_id = a.id
                     where a.id = @id and a.published
-                    order by (l.locale = @loc) desc
+                    order by (l.locale = @loc) desc, (l.locale = 'en') desc, l.locale
                     limit 1
                     """, conn);
                 cmd.Parameters.AddWithValue("id", aid);
