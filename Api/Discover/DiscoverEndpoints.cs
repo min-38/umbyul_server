@@ -304,6 +304,9 @@ public static class DiscoverEndpoints
             return null; // 마이그레이션 0061 전
         }
 
+        string? name, artist, image;
+        IReadOnlyList<ArtistRef> artists;
+        bool explicitFlag;
         try
         {
             var path = $"{(type == "album" ? "albums" : "tracks")}/{spotifyId}?market={PickMarket}";
@@ -313,15 +316,66 @@ public static class DiscoverEndpoints
             if (type == "album")
             {
                 var a = Api.Detail.DetailParse.Album(doc.RootElement);
-                return new DailyPickItem(type, spotifyId, a.Name, a.Artists.Count > 0 ? a.Artists[0].Name : null,
-                    a.ImageUrl, MapArtists(a.Artists), false, note);
+                (name, image, artists, explicitFlag) = (a.Name, a.ImageUrl, MapArtists(a.Artists), false);
             }
-            var t = Api.Detail.DetailParse.Track(doc.RootElement);
-            return new DailyPickItem(type, spotifyId, t.Name, t.Artists.Count > 0 ? t.Artists[0].Name : null,
-                t.Album?.ImageUrl, MapArtists(t.Artists), t.Explicit, note);
+            else
+            {
+                var t = Api.Detail.DetailParse.Track(doc.RootElement);
+                (name, image, artists, explicitFlag) = (t.Name, t.Album?.ImageUrl, MapArtists(t.Artists), t.Explicit);
+            }
+            artist = artists.Count > 0 ? artists[0].Name : null;
         }
         catch (HttpRequestException) { return null; }
         catch (JsonException) { return null; }
+
+        // 우리 평점·크라우드 장르를 붙임(카드의 별점·장르 칩용). 실패해도 픽은 살린다.
+        var (average, count, genres) = await LoadPickStatsAsync(conn, type, spotifyId, ct);
+        return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note, average, count, genres);
+    }
+
+    // 픽 대상의 평점 요약 + 대표 장르(합의 ≥ MinConsensusVotes). 오류 시 (null, 0, []).
+    private static async Task<(double? Average, int Count, IReadOnlyList<string> Genres)> LoadPickStatsAsync(
+        NpgsqlConnection conn, string type, string spotifyId, CancellationToken ct)
+    {
+        try
+        {
+            double? avg = null;
+            int count = 0;
+            await using (var cmd = new NpgsqlCommand(
+                "select round(avg(score), 2)::float8, count(*) from public.ratings where target_type = @t and target_spotify_id = @id and deleted_at is null", conn))
+            {
+                cmd.Parameters.AddWithValue("t", type);
+                cmd.Parameters.AddWithValue("id", spotifyId);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                if (await r.ReadAsync(ct))
+                {
+                    avg = r.IsDBNull(0) ? null : r.GetDouble(0);
+                    count = (int)r.GetInt64(1);
+                }
+            }
+
+            var genres = new List<string>();
+            await using (var cmd = new NpgsqlCommand(
+                """
+                select g.name
+                from public.genre_tags gt
+                join public.genres g on g.id = gt.genre_id
+                where gt.target_type = @t and gt.target_spotify_id = @id
+                group by g.id, g.name, g.sort_order
+                having count(*) >= @min
+                order by count(*) desc, g.sort_order
+                limit 4
+                """, conn))
+            {
+                cmd.Parameters.AddWithValue("t", type);
+                cmd.Parameters.AddWithValue("id", spotifyId);
+                cmd.Parameters.AddWithValue("min", MinConsensusVotes);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct)) genres.Add(r.GetString(0));
+            }
+            return (avg, count, genres);
+        }
+        catch (NpgsqlException) { return (null, 0, []); }
     }
 
     // Api.Detail.ArtistRef(비널) → Api.Common.ArtistRef(널 허용, DiscoverItem·프론트와 동일 형태).
@@ -349,7 +403,8 @@ public sealed record DiscoverData(
     IReadOnlyList<DiscoverItem> Recommend,
     DailyPickItem? DailyPick);
 
-// 오늘의 음악(NON-154) 표시 모델. count/avg 없는 단일 큐레이션 픽 — note(운영자 코멘트) 포함.
+// 오늘의 음악(NON-154) 표시 모델. 커버 메타(Spotify) + 우리 평점 요약 + 대표 장르. Note는 어드민 메모(카드 미표시).
 public sealed record DailyPickItem(
     string TargetType, string SpotifyId, string? Name, string? Artist,
-    string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit, string? Note);
+    string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit, string? Note,
+    double? Average, int Count, IReadOnlyList<string> Genres);
