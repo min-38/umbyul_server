@@ -55,6 +55,81 @@ public static class DiscoverEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+
+        // Genre 브라우즈(NON-84): 부모 장르 슬러그 → 상단 롤업 추천 + 서브장르별 목록. 크라우드 태깅(genre_tags) 기반.
+        app.MapGet("/discover/genre/{slug}", async (string slug, CancellationToken ct) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync(ct);
+
+                // 부모 장르 해석(최상위만). 서브 슬러그·미존재는 404.
+                int parentId;
+                string parentSlug, parentName;
+                await using (var cmd = new NpgsqlCommand(
+                    "select id, slug, name from public.genres where slug = @s and parent_id is null", conn))
+                {
+                    cmd.Parameters.AddWithValue("s", slug);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    if (!await r.ReadAsync(ct)) return ApiResults.NotFound("GENRE_NOT_FOUND");
+                    parentId = r.GetInt32(0);
+                    parentSlug = r.GetString(1);
+                    parentName = r.GetString(2);
+                }
+
+                var subs = new List<GenreRef>();
+                await using (var cmd = new NpgsqlCommand(
+                    "select id, slug, name from public.genres where parent_id = @p order by sort_order, id", conn))
+                {
+                    cmd.Parameters.AddWithValue("p", parentId);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct)) subs.Add(new GenreRef(r.GetInt32(0), r.GetString(1), r.GetString(2)));
+                }
+
+                // 상단: 부모 + 서브 전체 롤업(그 장르 계열 대표). 하단: 서브장르별(콘텐츠 있는 것만).
+                var allIds = new[] { parentId }.Concat(subs.Select(s => s.Id)).ToArray();
+                var top = await LoadTaggedTargetsAsync(conn, allIds, 18, ct);
+                var subSections = new List<GenreSubSection>();
+                foreach (var sub in subs)
+                {
+                    var items = await LoadTaggedTargetsAsync(conn, new[] { sub.Id }, 15, ct);
+                    if (items.Count > 0) subSections.Add(new GenreSubSection(sub, items));
+                }
+
+                return ApiResults.Ok("OK", new GenreDiscoverData(new GenreRef(parentId, parentSlug, parentName), top, subSections));
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+    }
+
+    // 지정 장르(들)로 합의 태깅된(≥MinConsensusVotes) 대상 집계. 리뷰수·평점순. NON-84 Genre 브라우즈.
+    private static async Task<List<DiscoverItem>> LoadTaggedTargetsAsync(NpgsqlConnection conn, int[] genreIds, int limit, CancellationToken ct)
+    {
+        if (genreIds.Length == 0) return [];
+        await using var cmd = new NpgsqlCommand(
+            $"""
+            select r.target_type, r.target_spotify_id, count(*), round(avg(r.score), 2)::float8,
+                   max(r.target_name), max(r.target_artist), max(r.target_image_url),
+                   (array_agg(r.target_artists) filter (where r.target_artists is not null))[1],
+                   bool_or(r.target_explicit)
+            from public.ratings r
+            where r.target_spotify_id is not null and r.deleted_at is null
+              and exists (
+                  select 1 from public.genre_tags gt
+                  where gt.target_type = r.target_type and gt.target_spotify_id = r.target_spotify_id
+                    and gt.genre_id = any(@genres)
+                  group by gt.genre_id
+                  having count(*) >= @min
+              )
+            group by r.target_type, r.target_spotify_id
+            order by count(*) desc, avg(r.score) desc
+            limit {limit}
+            """, conn);
+        cmd.Parameters.AddWithValue("genres", genreIds);
+        cmd.Parameters.AddWithValue("min", MinConsensusVotes);
+        return await ReadItemsAsync(cmd, ct);
     }
 
     // 대상(앨범/곡)별 집계 커버. where/orderBy로 섹션 구분. me 지정 시 @me 파라미터.
@@ -411,6 +486,11 @@ public sealed record DiscoverData(
     IReadOnlyList<DiscoverItem> MyRecent,
     IReadOnlyList<DiscoverItem> Recommend,
     DailyPickItem? DailyPick);
+
+// Genre 브라우즈(NON-84). 부모 장르 페이지: 롤업 추천(Top) + 서브장르별 목록(Subs).
+public sealed record GenreRef(int Id, string Slug, string Name);
+public sealed record GenreSubSection(GenreRef Genre, IReadOnlyList<DiscoverItem> Items);
+public sealed record GenreDiscoverData(GenreRef Genre, IReadOnlyList<DiscoverItem> Top, IReadOnlyList<GenreSubSection> Subs);
 
 // 오늘의 음악(NON-154) 표시 모델. 커버 메타(Spotify) + 우리 평점 요약 + 대표 장르. Note는 어드민 메모(카드 미표시).
 public sealed record DailyPickItem(
