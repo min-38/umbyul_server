@@ -10,17 +10,29 @@ public sealed partial class AdminDb
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "select id, target_type, target_spotify_id, note, pick_date, created_at from public.daily_picks order by pick_date desc", conn);
-        var list = new List<DailyPickAdminRow>();
-        await using var r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct))
-            list.Add(new DailyPickAdminRow(
-                r.GetGuid(0), r.GetString(1), r.GetString(2),
-                r.IsDBNull(3) ? null : r.GetString(3),
-                r.GetFieldValue<DateOnly>(4),
-                r.GetFieldValue<DateTimeOffset>(5)));
-        return list;
+        for (var withYoutube = true; ; withYoutube = false)
+        {
+            try
+            {
+                var col = withYoutube ? "youtube_url" : "null::text";
+                await using var cmd = new NpgsqlCommand(
+                    $"select id, target_type, target_spotify_id, note, pick_date, created_at, {col} from public.daily_picks order by pick_date desc", conn);
+                var list = new List<DailyPickAdminRow>();
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct))
+                    list.Add(new DailyPickAdminRow(
+                        r.GetGuid(0), r.GetString(1), r.GetString(2),
+                        r.IsDBNull(3) ? null : r.GetString(3),
+                        r.GetFieldValue<DateOnly>(4),
+                        r.GetFieldValue<DateTimeOffset>(5),
+                        r.IsDBNull(6) ? null : r.GetString(6)));
+                return list;
+            }
+            catch (PostgresException e) when (withYoutube && e.SqlState == PostgresErrorCodes.UndefinedColumn)
+            {
+                continue; // 마이그레이션 0062 전 — youtube_url 없이 재시도
+            }
+        }
     }
 
     // 다음 노출일 기본값 = max(pick_date)+1 과 오늘 중 큰 값(과거로 안 쌓이게 = 큐 뒤에 이어붙임).
@@ -35,7 +47,7 @@ public sealed partial class AdminDb
         return v switch { DateOnly d => d, DateTime dt => DateOnly.FromDateTime(dt), _ => today };
     }
 
-    public async Task<(bool Ok, string? Error)> CreateDailyPickAsync(string targetType, string spotifyId, string? note, DateOnly pickDate, Actor actor, CancellationToken ct = default)
+    public async Task<(bool Ok, string? Error)> CreateDailyPickAsync(string targetType, string spotifyId, string? note, DateOnly pickDate, string? youtubeUrl, Actor actor, CancellationToken ct = default)
     {
         if (Validate(ref targetType, ref spotifyId) is { } err) return (false, err);
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
@@ -44,22 +56,27 @@ public sealed partial class AdminDb
         try
         {
             await using var ins = new NpgsqlCommand(
-                "insert into public.daily_picks (target_type, target_spotify_id, note, pick_date) values (@t, @s, @n, @d) returning id", conn);
+                "insert into public.daily_picks (target_type, target_spotify_id, note, pick_date, youtube_url) values (@t, @s, @n, @d, @y) returning id", conn);
             ins.Parameters.AddWithValue("t", targetType);
             ins.Parameters.AddWithValue("s", spotifyId);
             ins.Parameters.AddWithValue("n", NoteParam(note));
             ins.Parameters.AddWithValue("d", pickDate);
+            ins.Parameters.AddWithValue("y", NoteParam(youtubeUrl));
             newId = (Guid)(await ins.ExecuteScalarAsync(ct))!;
         }
         catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
         {
             return (false, "그 날짜에 이미 픽이 있습니다.");
         }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn)
+        {
+            return (false, "youtube_url 컬럼이 없습니다 — 마이그레이션 0062를 적용하세요.");
+        }
         await LogAsync(conn, actor, "dailypick.create", newId.ToString(), $"{pickDate:yyyy-MM-dd} · {targetType} {spotifyId}", ct);
         return (true, null);
     }
 
-    public async Task<(bool Ok, string? Error)> UpdateDailyPickAsync(Guid id, string targetType, string spotifyId, string? note, DateOnly pickDate, Actor actor, CancellationToken ct = default)
+    public async Task<(bool Ok, string? Error)> UpdateDailyPickAsync(Guid id, string targetType, string spotifyId, string? note, DateOnly pickDate, string? youtubeUrl, Actor actor, CancellationToken ct = default)
     {
         if (Validate(ref targetType, ref spotifyId) is { } err) return (false, err);
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
@@ -67,17 +84,22 @@ public sealed partial class AdminDb
         try
         {
             await using var upd = new NpgsqlCommand(
-                "update public.daily_picks set target_type=@t, target_spotify_id=@s, note=@n, pick_date=@d where id=@id", conn);
+                "update public.daily_picks set target_type=@t, target_spotify_id=@s, note=@n, pick_date=@d, youtube_url=@y where id=@id", conn);
             upd.Parameters.AddWithValue("t", targetType);
             upd.Parameters.AddWithValue("s", spotifyId);
             upd.Parameters.AddWithValue("n", NoteParam(note));
             upd.Parameters.AddWithValue("d", pickDate);
+            upd.Parameters.AddWithValue("y", NoteParam(youtubeUrl));
             upd.Parameters.AddWithValue("id", id);
             if (await upd.ExecuteNonQueryAsync(ct) == 0) return (false, "NOT_FOUND");
         }
         catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
         {
             return (false, "그 날짜에 이미 픽이 있습니다.");
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn)
+        {
+            return (false, "youtube_url 컬럼이 없습니다 — 마이그레이션 0062를 적용하세요.");
         }
         await LogAsync(conn, actor, "dailypick.update", id.ToString(), $"{pickDate:yyyy-MM-dd} · {targetType} {spotifyId}", ct);
         return (true, null);
@@ -107,4 +129,4 @@ public sealed partial class AdminDb
     }
 }
 
-public sealed record DailyPickAdminRow(Guid Id, string TargetType, string SpotifyId, string? Note, DateOnly PickDate, DateTimeOffset CreatedAt);
+public sealed record DailyPickAdminRow(Guid Id, string TargetType, string SpotifyId, string? Note, DateOnly PickDate, DateTimeOffset CreatedAt, string? YoutubeUrl);

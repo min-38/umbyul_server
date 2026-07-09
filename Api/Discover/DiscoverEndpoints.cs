@@ -287,24 +287,11 @@ public static class DiscoverEndpoints
     {
         if (!spotify.Configured) return null;
 
-        string type, spotifyId;
-        string? note;
-        try
-        {
-            await using var cmd = new NpgsqlCommand(
-                "select target_type, target_spotify_id, note from public.daily_picks where pick_date <= current_date order by pick_date desc limit 1", conn);
-            await using var r = await cmd.ExecuteReaderAsync(ct);
-            if (!await r.ReadAsync(ct)) return null;
-            type = r.GetString(0);
-            spotifyId = r.GetString(1);
-            note = r.IsDBNull(2) ? null : r.GetString(2);
-        }
-        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
-        {
-            return null; // 마이그레이션 0061 전
-        }
+        var pick = await ReadActivePickAsync(conn, ct);
+        if (pick is null) return null;
+        var (type, spotifyId, note, youtubeUrl) = pick.Value;
 
-        string? name, artist, image;
+        string? name, artist, image, spotifyUrl, isrc = null, upc = null;
         IReadOnlyList<ArtistRef> artists;
         bool explicitFlag;
         try
@@ -316,12 +303,12 @@ public static class DiscoverEndpoints
             if (type == "album")
             {
                 var a = Api.Detail.DetailParse.Album(doc.RootElement);
-                (name, image, artists, explicitFlag) = (a.Name, a.ImageUrl, MapArtists(a.Artists), false);
+                (name, image, artists, explicitFlag, spotifyUrl, upc) = (a.Name, a.ImageUrl, MapArtists(a.Artists), false, a.SpotifyUrl, a.Upc);
             }
             else
             {
                 var t = Api.Detail.DetailParse.Track(doc.RootElement);
-                (name, image, artists, explicitFlag) = (t.Name, t.Album?.ImageUrl, MapArtists(t.Artists), t.Explicit);
+                (name, image, artists, explicitFlag, spotifyUrl, isrc) = (t.Name, t.Album?.ImageUrl, MapArtists(t.Artists), t.Explicit, t.SpotifyUrl, t.Isrc);
             }
             artist = artists.Count > 0 ? artists[0].Name : null;
         }
@@ -330,7 +317,36 @@ public static class DiscoverEndpoints
 
         // 우리 평점·크라우드 장르를 붙임(카드의 별점·장르 칩용). 실패해도 픽은 살린다.
         var (average, count, genres) = await LoadPickStatsAsync(conn, type, spotifyId, ct);
-        return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note, average, count, genres);
+        return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note,
+            average, count, genres, spotifyUrl, isrc, upc, youtubeUrl);
+    }
+
+    // 활성 픽(pick_date <= 오늘 중 최신) 1건 읽기. youtube_url(0062) 없으면 없이 재시도, daily_picks(0061) 없으면 null.
+    private static async Task<(string Type, string SpotifyId, string? Note, string? YoutubeUrl)?> ReadActivePickAsync(
+        NpgsqlConnection conn, CancellationToken ct)
+    {
+        for (var withYoutube = true; ; withYoutube = false)
+        {
+            try
+            {
+                var col = withYoutube ? "youtube_url" : "null::text";
+                await using var cmd = new NpgsqlCommand(
+                    $"select target_type, target_spotify_id, note, {col} from public.daily_picks where pick_date <= current_date order by pick_date desc limit 1", conn);
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                if (!await r.ReadAsync(ct)) return null;
+                return (r.GetString(0), r.GetString(1),
+                    r.IsDBNull(2) ? null : r.GetString(2),
+                    r.IsDBNull(3) ? null : r.GetString(3));
+            }
+            catch (PostgresException e) when (withYoutube && e.SqlState == PostgresErrorCodes.UndefinedColumn)
+            {
+                continue; // 마이그레이션 0062 전 — youtube_url 없이 재시도
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+            {
+                return null; // 마이그레이션 0061 전
+            }
+        }
     }
 
     // 픽 대상의 평점 요약 + 대표 장르(합의 ≥ MinConsensusVotes). 오류 시 (null, 0, []).
@@ -407,4 +423,5 @@ public sealed record DiscoverData(
 public sealed record DailyPickItem(
     string TargetType, string SpotifyId, string? Name, string? Artist,
     string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit, string? Note,
-    double? Average, int Count, IReadOnlyList<string> Genres);
+    double? Average, int Count, IReadOnlyList<string> Genres,
+    string? SpotifyUrl, string? Isrc, string? Upc, string? YoutubeUrl);

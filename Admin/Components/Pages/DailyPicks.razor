@@ -83,7 +83,11 @@ else
                     </span>
                     <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
                 </div>
-                <textarea class="form-control form-control-sm mb-3" rows="2" placeholder="메모 (선택 · 운영자 코멘트)" @bind="note"></textarea>
+                <div class="input-group input-group-sm mb-2">
+                    <span class="input-group-text">YouTube</span>
+                    <input class="form-control form-control-sm" placeholder="YouTube URL (선택 · 카드 아이콘 링크)" @bind="youtubeUrl" />
+                </div>
+                <textarea class="form-control form-control-sm mb-3" rows="2" placeholder="메모 (선택 · 운영자 코멘트, 카드엔 표시 안 됨)" @bind="note"></textarea>
                 <div class="d-flex align-items-center gap-2">
                     <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
                     @if (msg is not null)
@@ -104,6 +108,7 @@ else
     private string targetType = "track";
     private string spotifyId = "";
     private string note = "";
+    private string youtubeUrl = "";
     private DateOnly pickDate;
     private string? msg;
     private bool err;
@@ -125,6 +130,7 @@ else
         targetType = "track";
         spotifyId = "";
         note = "";
+        youtubeUrl = "";
         pickDate = await Db.NextPickDateAsync();
         msg = null;
     }
@@ -136,6 +142,7 @@ else
         targetType = row.TargetType;
         spotifyId = row.SpotifyId;
         note = row.Note ?? "";
+        youtubeUrl = row.YoutubeUrl ?? "";
         pickDate = row.PickDate;
         msg = null;
     }
@@ -149,8 +156,8 @@ else
         {
             var actor = await CurrentActor();
             var (ok, error) = id is { } eid
-                ? await Db.UpdateDailyPickAsync(eid, targetType, spotifyId, note, pickDate, actor)
-                : await Db.CreateDailyPickAsync(targetType, spotifyId, note, pickDate, actor);
+                ? await Db.UpdateDailyPickAsync(eid, targetType, spotifyId, note, pickDate, youtubeUrl, actor)
+                : await Db.CreateDailyPickAsync(targetType, spotifyId, note, pickDate, youtubeUrl, actor);
             if (!ok) { err = true; msg = error ?? "저장하지 못했습니다."; return; }
             err = false; msg = "저장됨";
             notice = null;
