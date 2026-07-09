@@ -1,0 +1,177 @@
+@page "/daily-picks"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>오늘의 음악</PageTitle>
+
+<div class="page-header">
+    <h1>오늘의 음악</h1>
+    <p class="subtitle">Discover 상단 데일리 픽 큐. 노출일(pick_date) 기준으로 하루 1개씩 자동 노출 — 전날 공백이어도 최신 픽이 뜹니다. Spotify ID만 넣으면 이름·커버는 자동 표시됩니다.</p>
+</div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+@if (notice is not null)
+{
+    <div class="alert @(noticeErr ? "alert-danger" : "alert-success") py-2">@notice</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body d-flex align-items-center gap-2 py-2">
+            <span class="text-muted small">@(picks.Count)개 픽</span>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 픽</button>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:8rem">노출일</th><th style="width:5rem">종류</th><th>Spotify ID</th><th>메모</th><th style="width:4rem"></th></tr></thead>
+            <tbody>
+                @if (picks.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-center text-muted py-4">픽이 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var row in picks)
+                    {
+                        <tr class="@(editing && row.Id == id ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(row)">
+                            <td class="@(row.PickDate <= Today ? "fw-semibold" : "text-muted")">
+                                @row.PickDate.ToString("yyyy-MM-dd")
+                                @if (row.PickDate == ActiveDate) { <span class="badge bg-success ms-1">노출 중</span> }
+                            </td>
+                            <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
+                            <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.SpotifyId</td>
+                            <td class="text-muted small text-truncate" style="max-width:18rem">@(row.Note ?? "—")</td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" @onclick:stopPropagation disabled="@Busy">삭제</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (editing)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    <span class="badge @(id is null ? "bg-primary" : "bg-secondary")">@(id is null ? "새 픽" : "편집")</span>
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">종류</span>
+                        <select class="form-select form-select-sm" style="width:auto" @bind="targetType">
+                            <option value="track">곡</option>
+                            <option value="album">앨범</option>
+                        </select>
+                    </span>
+                    <input class="form-control form-control-sm font-monospace" style="width:280px" placeholder="Spotify ID" @bind="spotifyId" />
+                    <span class="input-group input-group-sm" style="width:auto">
+                        <span class="input-group-text">노출일</span>
+                        <input type="date" class="form-control form-control-sm" style="width:auto" @bind="pickDate" />
+                    </span>
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
+                </div>
+                <textarea class="form-control form-control-sm mb-3" rows="2" placeholder="메모 (선택 · 운영자 코멘트)" @bind="note"></textarea>
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
+                    @if (msg is not null)
+                    {
+                        <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                    <span class="text-muted small">트랙/앨범 페이지 URL의 마지막 ID를 붙여넣으세요.</span>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<DailyPickAdminRow> picks = [];
+    private bool editing;
+    private Guid? id;
+    private string targetType = "track";
+    private string spotifyId = "";
+    private string note = "";
+    private DateOnly pickDate;
+    private string? msg;
+    private bool err;
+    private string? notice;
+    private bool noticeErr;
+
+    private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
+    // 현재 노출 중인 픽의 날짜 = pick_date <= 오늘 중 최신.
+    private DateOnly? ActiveDate => picks.Where(p => p.PickDate <= Today).Max(p => (DateOnly?)p.PickDate);
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load() => await LoadAsync(async () => picks = await Db.ListDailyPicksAsync());
+
+    private async Task NewItem()
+    {
+        editing = true;
+        id = null;
+        targetType = "track";
+        spotifyId = "";
+        note = "";
+        pickDate = await Db.NextPickDateAsync();
+        msg = null;
+    }
+
+    private void Edit(DailyPickAdminRow row)
+    {
+        editing = true;
+        id = row.Id;
+        targetType = row.TargetType;
+        spotifyId = row.SpotifyId;
+        note = row.Note ?? "";
+        pickDate = row.PickDate;
+        msg = null;
+    }
+
+    private void CloseEditor() { editing = false; msg = null; }
+
+    private async Task Save()
+    {
+        if (string.IsNullOrWhiteSpace(spotifyId)) { err = true; msg = "Spotify ID를 입력하세요."; return; }
+        await RunAsync(async () =>
+        {
+            var actor = await CurrentActor();
+            var (ok, error) = id is { } eid
+                ? await Db.UpdateDailyPickAsync(eid, targetType, spotifyId, note, pickDate, actor)
+                : await Db.CreateDailyPickAsync(targetType, spotifyId, note, pickDate, actor);
+            if (!ok) { err = true; msg = error ?? "저장하지 못했습니다."; return; }
+            err = false; msg = "저장됨";
+            notice = null;
+            picks = await Db.ListDailyPicksAsync();
+            if (id is null) editing = false;
+        });
+    }
+
+    private Task Delete(DailyPickAdminRow row) => RunAsync(async () =>
+    {
+        var (ok, error) = await Db.DeleteDailyPickAsync(row.Id, await CurrentActor());
+        if (!ok) { noticeErr = true; notice = error; return; }
+        noticeErr = false; notice = $"{row.PickDate:yyyy-MM-dd} 픽 삭제됨";
+        if (id == row.Id) editing = false;
+        picks = await Db.ListDailyPicksAsync();
+    }, confirm: $"{row.PickDate:yyyy-MM-dd} 픽을 삭제할까요?");
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}

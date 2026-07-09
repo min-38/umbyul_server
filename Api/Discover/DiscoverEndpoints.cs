@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Common;
+using Api.Spotify;
 using Npgsql;
 
 namespace Api.Discover;
@@ -20,10 +21,12 @@ public static class DiscoverEndpoints
     private const int MinCandidateNeighbors = 2;
     /// CF: 유사도 상위 이웃 캡(성능) — 이웃→후보 스캔 비용 상한.
     private const int MaxNeighbors = 200;
+    /// 오늘의 음악(NON-154) 메타 해석 시장 — DetailEndpoints와 동일(explicit 정확도 위해).
+    private const string PickMarket = "KR";
 
     public static void MapDiscoverEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/discover", async (ClaimsPrincipal user, CancellationToken ct) =>
+        app.MapGet("/discover", async (ClaimsPrincipal user, SpotifyClient spotify, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             var me = Me(user);
@@ -45,8 +48,10 @@ public static class DiscoverEndpoints
                     : [];
                 // Recommend(NON-155): 콘텐츠 기반(내가 높게 준 장르의 다른 곡) → 신호 없으면 전체 인기 폴백.
                 var recommend = await LoadRecommendAsync(conn, me, ct);
+                // 오늘의 음악(NON-154): 날짜 기반 큐레이션 픽. 실패·부재 시 null → 프론트에서 섹션 숨김.
+                var dailyPick = await LoadDailyPickAsync(conn, spotify, ct);
 
-                return ApiResults.Ok("OK", new DiscoverData(rising, fresh, myRecent, recommend));
+                return ApiResults.Ok("OK", new DiscoverData(rising, fresh, myRecent, recommend, dailyPick));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -276,6 +281,57 @@ public static class DiscoverEndpoints
         return await ReadItemsAsync(cmd, ct);
     }
 
+    // 오늘의 음악(NON-154): pick_date <= 오늘 중 최신 픽 1건 → target을 Spotify 상세(캐시)로 해석해 커버 메타 구성.
+    // daily_picks 미존재(0061 전)·Spotify 미설정·조회 실패·잘못된 id 는 전부 null 로 degrade(섹션만 숨김).
+    private static async Task<DailyPickItem?> LoadDailyPickAsync(NpgsqlConnection conn, SpotifyClient spotify, CancellationToken ct)
+    {
+        if (!spotify.Configured) return null;
+
+        string type, spotifyId;
+        string? note;
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                "select target_type, target_spotify_id, note from public.daily_picks where pick_date <= current_date order by pick_date desc limit 1", conn);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) return null;
+            type = r.GetString(0);
+            spotifyId = r.GetString(1);
+            note = r.IsDBNull(2) ? null : r.GetString(2);
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+        {
+            return null; // 마이그레이션 0061 전
+        }
+
+        try
+        {
+            var path = $"{(type == "album" ? "albums" : "tracks")}/{spotifyId}?market={PickMarket}";
+            var json = await spotify.GetAsync(path, ct);
+            if (json is null) return null;
+            using var doc = JsonDocument.Parse(json);
+            if (type == "album")
+            {
+                var a = Api.Detail.DetailParse.Album(doc.RootElement);
+                return new DailyPickItem(type, spotifyId, a.Name, a.Artists.Count > 0 ? a.Artists[0].Name : null,
+                    a.ImageUrl, MapArtists(a.Artists), false, note);
+            }
+            var t = Api.Detail.DetailParse.Track(doc.RootElement);
+            return new DailyPickItem(type, spotifyId, t.Name, t.Artists.Count > 0 ? t.Artists[0].Name : null,
+                t.Album?.ImageUrl, MapArtists(t.Artists), t.Explicit, note);
+        }
+        catch (HttpRequestException) { return null; }
+        catch (JsonException) { return null; }
+    }
+
+    // Api.Detail.ArtistRef(비널) → Api.Common.ArtistRef(널 허용, DiscoverItem·프론트와 동일 형태).
+    private static IReadOnlyList<ArtistRef> MapArtists(IReadOnlyList<Api.Detail.ArtistRef> src)
+    {
+        var list = new List<ArtistRef>(src.Count);
+        foreach (var a in src) list.Add(new ArtistRef(a.Id, a.Name));
+        return list;
+    }
+
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;
 }
@@ -290,4 +346,10 @@ public sealed record DiscoverData(
     RisingWindows Rising,
     IReadOnlyList<DiscoverItem> New,
     IReadOnlyList<DiscoverItem> MyRecent,
-    IReadOnlyList<DiscoverItem> Recommend);
+    IReadOnlyList<DiscoverItem> Recommend,
+    DailyPickItem? DailyPick);
+
+// 오늘의 음악(NON-154) 표시 모델. count/avg 없는 단일 큐레이션 픽 — note(운영자 코멘트) 포함.
+public sealed record DailyPickItem(
+    string TargetType, string SpotifyId, string? Name, string? Artist,
+    string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit, string? Note);
