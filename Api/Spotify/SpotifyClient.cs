@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Npgsql;
 
 namespace Api.Spotify;
@@ -27,7 +29,28 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
     // 429 발생 시 관리자 모니터링용으로 실제 Retry-After를 DB(spotify_status)에 기록.
     private readonly string? _dbConnString = BuildDbConnString(config);
 
+    // L1 전역 토큰 버킷 레이트 리미터(NON-41) — 429가 오기 전에 우리가 먼저 안전 속도로 제한.
+    // 정확한 Spotify 한도는 비공개(롤링 30초 창)라 RPS는 config로 튜닝(SPOTIFY:RATE_LIMIT_RPS, 기본 10).
+    private readonly TokenBucketRateLimiter _limiter = BuildLimiter(config);
+
+    // L2 single-flight(NON-41) — 같은 URL 동시 캐시 미스를 Spotify 호출 1번으로 합침(스탬피드 방지).
+    private readonly ConcurrentDictionary<string, Lazy<Task<(HttpStatusCode Status, string Body)>>> _inflight = new();
+
     public bool Configured => !string.IsNullOrEmpty(_clientId) && !string.IsNullOrEmpty(_clientSecret);
+
+    private static TokenBucketRateLimiter BuildLimiter(IConfiguration config)
+    {
+        var rps = int.TryParse(config.GetSection("SPOTIFY")["RATE_LIMIT_RPS"], out var r) && r > 0 ? r : 10;
+        return new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
+        {
+            TokenLimit = rps * 2,       // 버스트 허용치
+            TokensPerPeriod = rps,      // 초당 보충
+            ReplenishmentPeriod = TimeSpan.FromSeconds(1),
+            QueueLimit = 500,           // 대기 큐(초과 시 fast-fail)
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            AutoReplenishment = true,
+        });
+    }
 
     /// 검색. 원시 JSON 문자열을 반환 — 호출부가 자기 스코프에서 파싱(JsonDocument 수명 문제 회피).
     /// 트랙은 external_ids.isrc 포함. 앨범 upc 는 search 응답엔 없어 GET /albums/{id} 필요(NON-5).
@@ -55,7 +78,7 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
     }
 
     // 공통 GET. 캐시 히트면 Spotify 미호출(서킷/429 무관하게 서빙), 미스면 조회 후 200만 캐시.
-    // 서킷 오픈 중(429 penalty)이면 호출 없이 즉시 실패, 429면 Retry-After(캡)만큼 서킷을 연다.
+    // 서킷 오픈 중(429 penalty)이면 호출 없이 즉시 실패. 동시 미스는 single-flight로 1콜에 합침(NON-41 L2).
     private async Task<(HttpStatusCode Status, string Body)> RequestAsync(string url, CancellationToken ct)
     {
         var ttl = url.Contains("/search", StringComparison.Ordinal) ? TimeSpan.FromHours(1) : TimeSpan.FromHours(12);
@@ -65,25 +88,47 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         if (DateTimeOffset.UtcNow < _blockedUntil)
             throw new HttpRequestException($"Spotify rate-limited (circuit open until {_blockedUntil:O})");
 
-        var token = await GetTokenAsync(ct);
+        // single-flight: 같은 url 동시 미스는 공유 fetch 1개를 await. 공유 fetch는 caller ct와 분리
+        // (한 caller가 취소해도 나머지 대기자에겐 결과가 살아있게). 각 caller는 자기 ct로 '대기'만 취소.
+        var lazy = _inflight.GetOrAdd(url, u => new Lazy<Task<(HttpStatusCode, string)>>(() =>
+        {
+            var t = FetchAsync(u);
+            _ = t.ContinueWith(completed => _inflight.TryRemove(u, out _), TaskScheduler.Default);
+            return t;
+        }));
+        return await lazy.Value.WaitAsync(ct);
+    }
+
+    // 실제 Spotify 조회(single-flight 내부). L1 레이트리미터 통과 → 토큰 → HTTP → 429면 서킷 오픈 → 200만 캐시.
+    private async Task<(HttpStatusCode Status, string Body)> FetchAsync(string url)
+    {
+        using var lease = await _limiter.AcquireAsync(1, CancellationToken.None);
+        if (!lease.IsAcquired)
+            throw new HttpRequestException("Spotify local rate limiter queue full");
+
+        // 리미터 대기 중 서킷이 열렸을 수 있어 재확인(불필요한 호출 방지).
+        if (DateTimeOffset.UtcNow < _blockedUntil)
+            throw new HttpRequestException($"Spotify rate-limited (circuit open until {_blockedUntil:O})");
+
+        var token = await GetTokenAsync(CancellationToken.None);
         using var http = factory.CreateClient();
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        using var res = await http.SendAsync(req, ct);
-        var body = await res.Content.ReadAsStringAsync(ct);
+        using var res = await http.SendAsync(req, CancellationToken.None);
+        var body = await res.Content.ReadAsStringAsync(CancellationToken.None);
 
         if ((int)res.StatusCode == 429)
         {
             var realRetry = res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
             var circuitRetry = realRetry > MaxBackoff ? MaxBackoff : realRetry; // 회로는 짧게(캡)
             _blockedUntil = DateTimeOffset.UtcNow.Add(circuitRetry);
-            await WriteRateLimitStatusAsync(DateTimeOffset.UtcNow.Add(realRetry), (int)realRetry.TotalSeconds, ct);
+            await WriteRateLimitStatusAsync(DateTimeOffset.UtcNow.Add(realRetry), (int)realRetry.TotalSeconds, CancellationToken.None);
             throw new HttpRequestException(
                 $"Spotify 429 — backing off {circuitRetry.TotalSeconds:F0}s (Retry-After {realRetry.TotalSeconds:F0})");
         }
 
         if (res.StatusCode == HttpStatusCode.OK)
-            await cache.SetAsync(url, body, ct); // 200만 캐시(404/에러는 캐시 안 함)
+            await cache.SetAsync(url, body, CancellationToken.None); // 200만 캐시(404/에러는 캐시 안 함)
 
         return (res.StatusCode, body);
     }

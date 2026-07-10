@@ -45,60 +45,33 @@ public static class ArtistEndpoints
 
                 try
                 {
+                    // NON-41 L5: 앨범별 수록곡 조회(~12콜) 제거 — 헤더 + 앨범 디스코그래피만 라이브.
                     var loadedAlbums = await LoadAlbumsAsync(spotify, id, ct);
-                    var loadedTracks = await LoadTracksAsync(spotify, loadedAlbums.Select(a => a.SpotifyId).ToList(), ct);
-                    catalog = new ArtistCatalog(sid, name, img, url, loadedAlbums, loadedTracks);
+                    catalog = new ArtistCatalog(sid, name, img, url, loadedAlbums);
                     cache.Set(cacheKey, catalog, TimeSpan.FromMinutes(15));
                 }
                 catch (HttpRequestException)
                 {
-                    // 헤더는 있으나 앨범/수록곡 로드 실패(429 등) → 에러 상태로 헤더만. 캐시 안 함(다음에 재시도).
-                    catalog = new ArtistCatalog(sid, name, img, url, [], []);
+                    // 헤더는 있으나 앨범 로드 실패(429 등) → 에러 상태로 헤더만. 캐시 안 함(다음에 재시도).
+                    catalog = new ArtistCatalog(sid, name, img, url, []);
                     catalogError = true;
                 }
             }
 
             var albums = catalog.Albums;
-            var albumTracks = catalog.AlbumTracks;
-            var albumIds = albums.Select(a => a.SpotifyId).ToList();
-            var allTracks = albumTracks.Values.SelectMany(x => x).ToList();
-            var allIds = albumIds.Concat(allTracks.Select(x => x.Id)).Distinct().ToArray();
+            var albumIds = albums.Select(a => a.SpotifyId).ToArray();
 
-            var nameMap = new Dictionary<string, string>();
-            foreach (var a in albums) nameMap[a.SpotifyId] = a.Name;
-            foreach (var (tid, tname) in allTracks) nameMap[tid] = tname;
+            // 앨범 배지 = 직접 앨범 평점(수록곡 롤업 제거). 평가된 트랙·최근 리뷰는 ratings.target_artists로 DB에서 조회
+            // → 아티스트 페이지에서 Spotify 수록곡 호출 0(NON-41 L5).
+            var albumBadges = await LoadBadgesAsync(dbConnString, albumIds, ct);
+            var ratedTracks = await LoadArtistRatedTracksAsync(dbConnString, catalog.SpotifyId, ct);
+            var recentReviews = await LoadArtistReviewsAsync(dbConnString, catalog.SpotifyId, ct);
 
-            var badges = await LoadBadgesAsync(dbConnString, allIds, ct);
-            var recentReviews = (await LoadRecentReviewsAsync(dbConnString, allIds, ct))
-                .Select(r => r with { TargetName = nameMap.GetValueOrDefault(r.TargetSpotifyId, "") })
+            var ratedAlbums = albums
+                .Select(a => a with { Rating = albumBadges.GetValueOrDefault(a.SpotifyId) })
                 .ToList();
-
-            // 앨범 레코드 점수: {앨범 id} ∪ {수록곡 id}의 평가를 가중평균(avg*count 합 / count 합).
-            RatingBadge? RecordRating(string albumId)
-            {
-                double sum = 0;
-                var count = 0;
-                if (badges.TryGetValue(albumId, out var ab)) { sum += ab.Average * ab.Count; count += ab.Count; }
-                if (albumTracks.TryGetValue(albumId, out var ts))
-                    foreach (var (tid, _) in ts)
-                        if (badges.TryGetValue(tid, out var tb)) { sum += tb.Average * tb.Count; count += tb.Count; }
-                return count > 0 ? new RatingBadge(Math.Round(sum / count, 2), count) : null;
-            }
-
-            var ratedAlbums = albums.Select(a => a with { Rating = RecordRating(a.SpotifyId) }).ToList();
-            var totalRatings = badges.Values.Sum(b => b.Count);
             var ratedCount = ratedAlbums.Count(a => a.Rating is not null);
-
-            // 평가된 트랙 목록(점수순). 이미지·이름은 앨범 맥락에서 채움.
-            var albumImage = albums.ToDictionary(a => a.SpotifyId, a => a.ImageUrl);
-            var seenTrack = new HashSet<string>();
-            var ratedTracks = new List<ArtistRatedTrack>();
-            foreach (var (albumId, ts) in albumTracks)
-                foreach (var (tid, tname) in ts)
-                    if (seenTrack.Add(tid) && badges.TryGetValue(tid, out var tb))
-                        ratedTracks.Add(new ArtistRatedTrack(tid, tname, albumImage.GetValueOrDefault(albumId), tb));
-            ratedTracks = ratedTracks
-                .OrderByDescending(t => t.Rating.Average).ThenByDescending(t => t.Rating.Count).ToList();
+            var totalRatings = albumBadges.Values.Sum(b => b.Count) + ratedTracks.Sum(t => t.Rating.Count);
 
             var detail = new ArtistDetail(
                 catalog.SpotifyId,
@@ -177,33 +150,42 @@ public static class ArtistEndpoints
     }
 
     // 앨범별 수록곡(id·이름) 수집. 앨범당 1콜. Spotify 429(레이트리밋) 방지를 위해
-    // 대상 앨범 수를 제한하고 동시성도 스로틀(한 번에 몰아치지 않게).
-    private const int TrackFetchAlbumCap = 12;
-    private const int TrackFetchConcurrency = 5;
+    // target_artists jsonb 매칭용: [{"Id":"<artistId>"}]. ArtistRef(Id,Name)를 기본 옵션(PascalCase)으로
+    // 저장하므로 키는 "Id"(대문자). 이 아티스트가 참여한 평점을 containment(@>)로 찾음.
+    private static string ArtistJson(string artistId) => $"[{{\"Id\": {JsonSerializer.Serialize(artistId)}}}]";
 
-    private static async Task<Dictionary<string, List<(string Id, string Name)>>> LoadTracksAsync(
-        SpotifyClient spotify, IReadOnlyList<string> albumIds, CancellationToken ct)
+    // 이 아티스트의 평가된 트랙(점수순). Spotify 수록곡 조회 없이 우리 ratings(target_artists)에서만(NON-41 L5).
+    // 구 평점(target_artists null, 0029 이전)은 매칭 안 됨(허용) — 대신 앨범별 수록곡 라이브 호출을 제거.
+    private static async Task<List<ArtistRatedTrack>> LoadArtistRatedTracksAsync(
+        string? dbConnString, string artistId, CancellationToken ct)
     {
-        var target = albumIds.Take(TrackFetchAlbumCap).ToList();
-        using var gate = new SemaphoreSlim(TrackFetchConcurrency);
-        async Task<List<(string, string)>> Fetch(string aid)
+        var list = new List<ArtistRatedTrack>();
+        if (dbConnString is null) return list;
+        try
         {
-            await gate.WaitAsync(ct);
-            try { return await SafeParse(spotify, $"albums/{aid}/tracks?limit=50", ParseTracks, ct); }
-            finally { gate.Release(); }
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                """
+                select target_spotify_id, max(target_name), max(target_image_url),
+                       round(avg(score), 2)::float8, count(*)
+                from public.ratings
+                where target_type = 'track' and deleted_at is null
+                  and target_spotify_id is not null and target_artists @> @aj
+                group by target_spotify_id
+                order by round(avg(score), 2) desc, count(*) desc
+                limit 50
+                """, conn);
+            cmd.Parameters.Add(new NpgsqlParameter("aj", NpgsqlTypes.NpgsqlDbType.Jsonb) { Value = ArtistJson(artistId) });
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                list.Add(new ArtistRatedTrack(
+                    r.GetString(0),
+                    r.IsDBNull(1) ? "" : r.GetString(1),
+                    r.IsDBNull(2) ? null : r.GetString(2),
+                    new RatingBadge(r.GetDouble(3), (int)r.GetInt64(4))));
         }
-        var results = await Task.WhenAll(target.Select(Fetch));
-        var map = new Dictionary<string, List<(string Id, string Name)>>();
-        for (var i = 0; i < target.Count; i++) map[target[i]] = results[i];
-        return map;
-    }
-
-    private static List<(string Id, string Name)> ParseTracks(JsonElement root)
-    {
-        var list = new List<(string, string)>();
-        if (!root.TryGetProperty("items", out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
-        foreach (var it in arr.EnumerateArray())
-            if (Str(it, "id") is { } tid) list.Add((tid, Str(it, "name") ?? ""));
+        catch (NpgsqlException) { /* 없어도 페이지는 살린다 */ }
         return list;
     }
 
@@ -233,32 +215,33 @@ public static class ArtistEndpoints
         return map;
     }
 
-    // 이 아티스트 릴리스에 달린 최근 리뷰(본문 있는 것). 이미 모은 spotify_id 세트로 조회.
-    private static async Task<List<ArtistReview>> LoadRecentReviewsAsync(
-        string? dbConnString, string[] ids, CancellationToken ct)
+    // 이 아티스트(target_artists 매칭)에 달린 최근 리뷰(본문 있는 것). 트랙·앨범 모두. target_name 직접 선택(NON-41 L5).
+    private static async Task<List<ArtistReview>> LoadArtistReviewsAsync(
+        string? dbConnString, string artistId, CancellationToken ct)
     {
         var list = new List<ArtistReview>();
-        if (dbConnString is null || ids.Length == 0) return list;
+        if (dbConnString is null) return list;
         try
         {
             await using var conn = new NpgsqlConnection(dbConnString);
             await conn.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 """
-                select r.target_type, r.target_spotify_id, u.username, u.avatar_url, r.score, r.review, r.created_at
+                select r.target_type, coalesce(r.target_spotify_id, ''), u.username, u.avatar_url, r.score, r.review, r.created_at,
+                       coalesce(r.target_name, '')
                 from public.ratings r
                 join public.users u on u.id = r.user_id
-                where r.target_spotify_id = any(@ids) and r.review is not null and r.review <> '' and r.deleted_at is null
+                where r.target_artists @> @aj and r.review is not null and r.review <> '' and r.deleted_at is null
                 order by r.created_at desc
                 limit 10
                 """, conn);
-            cmd.Parameters.AddWithValue("ids", ids);
+            cmd.Parameters.Add(new NpgsqlParameter("aj", NpgsqlTypes.NpgsqlDbType.Jsonb) { Value = ArtistJson(artistId) });
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 list.Add(new ArtistReview(
                     r.GetString(0), r.GetString(1), r.GetString(2),
                     r.IsDBNull(3) ? null : r.GetString(3), r.GetDecimal(4), r.GetString(5),
-                    r.GetFieldValue<DateTimeOffset>(6), ""));
+                    r.GetFieldValue<DateTimeOffset>(6), r.GetString(7)));
         }
         catch (NpgsqlException) { /* 리뷰 피드는 없어도 페이지는 살린다 */ }
         return list;
@@ -273,10 +256,10 @@ public static class ArtistEndpoints
         el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }
 
-// 서버 내부 캐시용(클라이언트 응답 아님): Spotify 카탈로그 스냅샷.
+// 서버 내부 캐시용(클라이언트 응답 아님): Spotify 카탈로그 스냅샷(헤더 + 앨범 디스코그래피).
 internal sealed record ArtistCatalog(
     string SpotifyId, string Name, string? ImageUrl, string SpotifyUrl,
-    List<ArtistAlbum> Albums, Dictionary<string, List<(string Id, string Name)>> AlbumTracks);
+    List<ArtistAlbum> Albums);
 
 public sealed record RatingBadge(double Average, int Count);
 public sealed record ArtistAlbum(
