@@ -1,0 +1,266 @@
+@page "/patch-notes"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>패치노트</PageTitle>
+
+<div class="page-header">
+    <h1>패치노트</h1>
+    <p class="subtitle">버전별 업데이트 내역을 로케일별로 작성·게시합니다. 게시하려면 모든 언어 본문이 필요합니다. 작업 중(in progress)도 노출됩니다.</p>
+</div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body d-flex align-items-center gap-2 py-2">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Load">새로고침</button>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewNote" disabled="@Busy">+ 새 패치노트</button>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:8rem">버전</th><th style="width:7rem">상태</th><th style="width:8rem">릴리스일</th><th style="width:5rem">게시</th><th style="width:9rem">수정</th><th style="width:3rem"></th></tr></thead>
+            <tbody>
+                @if (items.Count == 0)
+                {
+                    <tr><td colspan="6" class="text-center text-muted py-4">패치노트가 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var it in items)
+                    {
+                        <tr class="@(editing && it.Id == id ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(it)">
+                            <td>@(string.IsNullOrEmpty(it.Version) ? "—" : it.Version)</td>
+                            <td>
+                                @if (it.Status == "in_progress")
+                                {
+                                    <span class="badge bg-warning text-dark">작업 중</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-info text-dark">릴리스</span>
+                                }
+                            </td>
+                            <td class="text-muted small">@(it.ReleasedAt?.ToString("yyyy-MM-dd") ?? "—")</td>
+                            <td>
+                                @if (it.Published)
+                                {
+                                    <span class="badge bg-success">게시</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">초안</span>
+                                }
+                            </td>
+                            <td class="text-muted small">@it.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(it.Id)" @onclick:stopPropagation disabled="@Busy">삭제</button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (editing && id is { } nid)
+    {
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                    <span class="badge @(published ? "bg-success" : "bg-secondary")">@(published ? "게시됨" : "초안")</span>
+                    @if (published)
+                    {
+                        <button class="btn btn-sm btn-outline-warning" @onclick="() => TogglePublish(false)" disabled="@Busy">게시 취소</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-sm btn-success" @onclick="() => TogglePublish(true)" disabled="@Busy">게시</button>
+                    }
+                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+                    <input class="form-control form-control-sm" style="width:130px" placeholder="버전 (v1.01)" @bind="version" />
+                    <select class="form-select form-select-sm" style="width:120px" @bind="status">
+                        <option value="released">릴리스</option>
+                        <option value="in_progress">작업 중</option>
+                    </select>
+                    <input type="date" class="form-control form-control-sm" style="width:160px" @bind="releasedDate" />
+                    <span class="text-muted small">본문 로케일</span>
+                    <select class="form-select form-select-sm" style="width:90px" value="@locale" @onchange="OnLocaleChange">
+                        <option value="ko">ko</option>
+                        <option value="en">en</option>
+                        <option value="ja">ja</option>
+                        <option value="es">es</option>
+                    </select>
+                    <span class="small">
+                        @foreach (var l in AdminDb.RequiredAnnouncementLocales)
+                        {
+                            var okLoc = localeStatus.TryGetValue(l, out var v) && v;
+                            <span class="badge @(okLoc ? "bg-success" : "bg-secondary") me-1" title="@(okLoc ? "완성" : "본문 필요")">@l @(okLoc ? "✓" : "·")</span>
+                        }
+                    </span>
+                </div>
+
+                <ul class="nav nav-tabs mb-2">
+                    <li class="nav-item"><button class="nav-link @(tab == "edit" ? "active" : "")" @onclick='() => tab = "edit"'>본문 편집</button></li>
+                    <li class="nav-item"><button class="nav-link @(tab == "preview" ? "active" : "")" @onclick='() => tab = "preview"'>미리보기</button></li>
+                </ul>
+                @if (tab == "edit")
+                {
+                    <textarea class="form-control font-monospace" rows="14" @bind="body" @bind:event="oninput" placeholder="본문 (마크다운 · ### 기능 / ### UI 등 소제목)"></textarea>
+                }
+                else
+                {
+                    <div class="border rounded p-3" style="min-height:14rem">@((MarkupString)PreviewHtml)</div>
+                }
+
+                <div class="d-flex align-items-center gap-2 mt-3">
+                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
+                    <span class="text-muted small">메타 + 현재 로케일(@locale) 본문 저장.</span>
+                    @if (msg is not null)
+                    {
+                        <span class="small ms-auto @(err ? "text-danger" : "text-success")">@msg</span>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<PatchNoteRow> items = [];
+    private bool editing;
+    private Guid? id;
+    private bool published;
+    private string version = "";
+    private string status = "released";
+    private DateOnly? releasedDate;
+    private string locale = "ko";
+    private string body = "";
+    private string tab = "edit";
+    private string? msg;
+    private bool err;
+    private Dictionary<string, bool> localeStatus = new();
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await LoadAsync(async () => items = await Db.ListPatchNotesAsync());
+        editing = false;
+    }
+
+    private async Task NewNote() => await RunAsync(async () =>
+    {
+        id = await Db.CreatePatchNoteAsync(await CurrentActor());
+        published = false;
+        version = "";
+        status = "released";
+        releasedDate = null;
+        locale = "ko";
+        body = "";
+        tab = "edit";
+        msg = null;
+        editing = true;
+        items = await Db.ListPatchNotesAsync();
+        await LoadStatus();
+    });
+
+    private async Task Edit(PatchNoteRow it)
+    {
+        id = it.Id;
+        published = it.Published;
+        locale = "ko";
+        tab = "edit";
+        msg = null;
+        editing = true;
+        var (v, s, d) = await Db.GetPatchNoteMetaAsync(it.Id);
+        version = v;
+        status = s;
+        releasedDate = d;
+        await LoadLocale();
+        await LoadStatus();
+    }
+
+    private async Task OnLocaleChange(ChangeEventArgs e)
+    {
+        locale = e.Value?.ToString() ?? "ko";
+        msg = null;
+        await LoadLocale();
+    }
+
+    private async Task LoadLocale()
+    {
+        if (id is { } nid) await LoadAsync(async () => body = await Db.GetPatchNoteLocaleAsync(nid, locale));
+    }
+
+    private async Task LoadStatus()
+    {
+        if (id is { } nid) localeStatus = await Db.GetPatchNoteLocaleStatusAsync(nid);
+    }
+
+    private void CloseEditor() { editing = false; msg = null; }
+
+    private async Task Save()
+    {
+        if (id is not { } nid) return;
+        if (status == "released" && string.IsNullOrWhiteSpace(version)) { err = true; msg = "릴리스는 버전이 필요합니다."; return; }
+        await RunAsync(async () =>
+        {
+            await Db.SavePatchNoteAsync(nid, version.Trim(), status, releasedDate, locale, body, await CurrentActor());
+            err = false;
+            msg = "저장됨";
+            items = await Db.ListPatchNotesAsync();
+            await LoadStatus();
+        });
+    }
+
+    private async Task TogglePublish(bool publish)
+    {
+        if (id is not { } nid) return;
+        await RunAsync(async () =>
+        {
+            var missing = await Db.PublishPatchNoteAsync(nid, publish, await CurrentActor());
+            if (missing.Count > 0)
+            {
+                err = true;
+                msg = $"게시하려면 모든 언어 본문이 필요합니다. 누락: {string.Join(", ", missing)}";
+                return;
+            }
+            published = publish;
+            err = false;
+            msg = publish ? "게시됨" : "게시 취소됨";
+            items = await Db.ListPatchNotesAsync();
+        }, confirm: publish ? "게시할까요?" : "게시를 취소할까요?");
+    }
+
+    private Task Delete(Guid itemId) => RunAsync(async () =>
+    {
+        await Db.DeletePatchNoteAsync(itemId, await CurrentActor());
+        if (id == itemId) editing = false;
+        items = await Db.ListPatchNotesAsync();
+    }, confirm: "이 패치노트를 삭제할까요?");
+
+    private string PreviewHtml => Admin.Services.SafeMarkdown.ToHtml(body);
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}
