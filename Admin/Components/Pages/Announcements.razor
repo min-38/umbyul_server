@@ -83,6 +83,13 @@ else
                         <option value="ja">ja</option>
                         <option value="es">es</option>
                     </select>
+                    <span class="small">
+                        @foreach (var l in AdminDb.RequiredAnnouncementLocales)
+                        {
+                            var okLoc = localeStatus.TryGetValue(l, out var v) && v;
+                            <span class="badge @(okLoc ? "bg-success" : "bg-secondary") me-1" title="@(okLoc ? "완성" : "제목·본문 필요")">@l @(okLoc ? "✓" : "·")</span>
+                        }
+                    </span>
                     @if (published)
                     {
                         <button class="btn btn-sm btn-outline-warning" @onclick="() => TogglePublish(false)" disabled="@Busy">게시 취소</button>
@@ -142,6 +149,7 @@ else
     private string? msg;
     private bool err;
     private ElementReference bodyRef;
+    private Dictionary<string, bool> localeStatus = new();
 
     protected override async Task OnInitializedAsync() => await Load();
 
@@ -162,6 +170,7 @@ else
         msg = null;
         editing = true;
         items = await Db.ListAnnouncementsAsync();
+        await LoadStatus();
     });
 
     private async Task Edit(AnnouncementRow it)
@@ -173,6 +182,12 @@ else
         msg = null;
         editing = true;
         await LoadLocale();
+        await LoadStatus();
+    }
+
+    private async Task LoadStatus()
+    {
+        if (id is { } aid) localeStatus = await Db.GetAnnouncementLocaleStatusAsync(aid);
     }
 
     private async Task OnLocaleChange(ChangeEventArgs e)
@@ -205,6 +220,7 @@ else
             err = false;
             msg = "저장됨";
             items = await Db.ListAnnouncementsAsync();
+            await LoadStatus();
         });
     }
 
@@ -213,8 +229,16 @@ else
         if (id is not { } aid) return;
         await RunAsync(async () =>
         {
-            await Db.PublishAnnouncementAsync(aid, publish, await CurrentActor());
+            var missing = await Db.PublishAnnouncementAsync(aid, publish, await CurrentActor());
+            if (missing.Count > 0)
+            {
+                err = true;
+                msg = $"게시하려면 모든 언어(제목·본문)가 필요합니다. 누락: {string.Join(", ", missing)}";
+                return;
+            }
             published = publish;
+            err = false;
+            msg = publish ? "게시됨" : "게시 취소됨";
             items = await Db.ListAnnouncementsAsync();
         }, confirm: publish ? "게시하면 (최초 게시 시) 전체 유저에게 끌 수 없는 알림이 발송됩니다. 게시할까요?" : "게시를 취소할까요?");
     }

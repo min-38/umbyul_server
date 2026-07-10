@@ -5,6 +5,9 @@ namespace Admin.Data;
 // 공지사항(NON-158/167). 로케일별 본문 + 게시. 최초 게시 시 전체 유저 강제 알림(끄기 불가) 브로드캐스트.
 public sealed partial class AdminDb
 {
+    // 게시하려면 이 로케일 전부 제목·본문이 있어야 함(NON-158).
+    public static readonly string[] RequiredAnnouncementLocales = ["ko", "en", "ja", "es"];
+
     public async Task<List<AnnouncementRow>> ListAnnouncementsAsync(CancellationToken ct = default)
     {
         if (!Configured) return [];
@@ -90,11 +93,43 @@ public sealed partial class AdminDb
         await LogAsync(conn, actor, "announcement.save", id.ToString(), locale, ct);
     }
 
-    // 게시/게시취소. 최초 게시(notified_at is null)에만 전체 유저 강제 알림 브로드캐스트(끄기 불가 — opt-out 절 없음). 트랜잭션.
-    public async Task PublishAnnouncementAsync(Guid id, bool publish, Actor actor, CancellationToken ct = default)
+    // 로케일별 완성도(제목·본문 모두 채워짐). 필수 로케일 키만.
+    public async Task<Dictionary<string, bool>> GetAnnouncementLocaleStatusAsync(Guid id, CancellationToken ct = default)
     {
-        if (!Configured) return;
+        var status = RequiredAnnouncementLocales.ToDictionary(l => l, _ => false);
+        if (!Configured) return status;
         await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select locale, (title <> '' and body <> '') from public.announcement_locales where announcement_id = @id", conn);
+        cmd.Parameters.AddWithValue("id", id);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            if (status.ContainsKey(r.GetString(0))) status[r.GetString(0)] = r.GetBoolean(1);
+        return status;
+    }
+
+    // 게시/게시취소. 게시는 필수 로케일 전부 완성돼야 가능(미완성 로케일 목록 반환 시 게시 안 함).
+    // 최초 게시(notified_at is null)에만 전체 유저 강제 알림 브로드캐스트(끄기 불가 — opt-out 절 없음). 트랜잭션.
+    public async Task<IReadOnlyList<string>> PublishAnnouncementAsync(Guid id, bool publish, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return Array.Empty<string>();
+        await using var conn = await OpenAsync(ct);
+
+        if (publish)
+        {
+            // 완성도 검사 — 필수 로케일 전부 제목·본문 있어야 게시.
+            var complete = new HashSet<string>();
+            await using (var chk = new NpgsqlCommand(
+                "select locale from public.announcement_locales where announcement_id = @id and title <> '' and body <> ''", conn))
+            {
+                chk.Parameters.AddWithValue("id", id);
+                await using var cr = await chk.ExecuteReaderAsync(ct);
+                while (await cr.ReadAsync(ct)) complete.Add(cr.GetString(0));
+            }
+            var missing = RequiredAnnouncementLocales.Where(l => !complete.Contains(l)).ToList();
+            if (missing.Count > 0) return missing; // 게시 차단
+        }
+
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         if (publish)
@@ -141,6 +176,7 @@ public sealed partial class AdminDb
 
         await tx.CommitAsync(ct);
         await LogAsync(conn, actor, publish ? "announcement.publish" : "announcement.unpublish", id.ToString(), null, ct);
+        return Array.Empty<string>();
     }
 
     public async Task DeleteAnnouncementAsync(Guid id, Actor actor, CancellationToken ct = default)
