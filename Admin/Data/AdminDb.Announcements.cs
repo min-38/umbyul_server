@@ -183,18 +183,21 @@ public sealed partial class AdminDb
     {
         if (!Configured) return;
         await using var conn = await OpenAsync(ct);
-        // 관련 알림 정리(FK 아님 — target_id 텍스트 매칭). 그 뒤 공지 삭제(로케일은 cascade).
+        // 관련 알림 정리(FK 아님 — target_id 텍스트 매칭) + 공지 삭제(로케일은 cascade)를 한 트랜잭션으로.
+        // 부분 실패(순단) 시 알림만 사라지고 공지가 잔존(notified_at 남아 재브로드캐스트 불가)하는 것 방지 — publish와 일관(QA4-9).
+        await using var tx = await conn.BeginTransactionAsync(ct);
         await using (var delN = new NpgsqlCommand(
-            "delete from public.notifications where type = 'announcement' and target_id = @id::text", conn))
+            "delete from public.notifications where type = 'announcement' and target_id = @id::text", conn, tx))
         {
             delN.Parameters.AddWithValue("id", id);
             await delN.ExecuteNonQueryAsync(ct);
         }
-        await using (var cmd = new NpgsqlCommand("delete from public.announcements where id = @id", conn))
+        await using (var cmd = new NpgsqlCommand("delete from public.announcements where id = @id", conn, tx))
         {
             cmd.Parameters.AddWithValue("id", id);
             await cmd.ExecuteNonQueryAsync(ct);
         }
+        await tx.CommitAsync(ct);
         await LogAsync(conn, actor, "announcement.delete", id.ToString(), null, ct);
     }
 }
