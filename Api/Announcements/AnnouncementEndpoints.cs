@@ -126,8 +126,8 @@ public static class AnnouncementEndpoints
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 
-        // 공지 상세. 게시된 것만, 요청 로케일 우선 en 폴백. 없으면 404. 조회 수는 뷰어당 1회.
-        app.MapGet("/announcements/{id}", async (string id, string? locale, ClaimsPrincipal user) =>
+        // 공지 상세. 게시된 것만, 요청 로케일 우선 en 폴백. 없으면 404. 조회수 집계는 /view(브라우저 핑)로 분리.
+        app.MapGet("/announcements/{id}", async (string id, string? locale) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (!Guid.TryParse(id, out var aid)) return ApiResults.BadRequest("INVALID_TARGET");
@@ -156,32 +156,6 @@ public static class AnnouncementEndpoints
                         r.IsDBNull(3) ? null : r.GetFieldValue<DateTimeOffset>(3));
                 }
 
-                // 조회 수 — 로그인 뷰어당 최초 1회만 +1(중복 제거). published/존재 확인(위 SELECT의 404) 이후 기록해
-                // 미게시 조회가 view 행을 선점 → 게시 후 첫 조회 미집계 되는 문제를 방지(QA4-6). 익명은 미집계:
-                // 상세는 서버 컴포넌트 SSR라 API가 보는 IP가 항상 Next 서버(collapse)이고 raw XFF는 스푸핑 가능(QA4-3). best-effort.
-                if (user.FindFirstValue("sub") is { Length: > 0 } sub && Guid.TryParse(sub, out _))
-                {
-                    try
-                    {
-                        int firstView;
-                        await using (var v = new NpgsqlCommand(
-                            "insert into public.announcement_views (announcement_id, viewer) values (@id, @v) on conflict do nothing", conn))
-                        {
-                            v.Parameters.AddWithValue("id", aid);
-                            v.Parameters.AddWithValue("v", $"u:{sub}");
-                            firstView = await v.ExecuteNonQueryAsync();
-                        }
-                        if (firstView > 0)
-                        {
-                            await using var inc = new NpgsqlCommand(
-                                "update public.announcements set view_count = view_count + 1 where id = @id and published", conn);
-                            inc.Parameters.AddWithValue("id", aid);
-                            await inc.ExecuteNonQueryAsync();
-                        }
-                    }
-                    catch (PostgresException) { /* announcement_views/view_count 없음 → skip */ }
-                }
-
                 int viewCount = 0;
                 try
                 {
@@ -203,5 +177,55 @@ public static class AnnouncementEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+
+        // 조회수 집계(NON-173) — 브라우저가 직접 호출(진짜 클라이언트 IP·로그인 identity 전달). 상세가 서버 컴포넌트 SSR라
+        // GET에선 뷰어를 구분할 수 없어(항상 Next 서버 IP → 전 방문자 collapse) /view로 분리. 게시 공지만, 뷰어당 최초 1회 +1.
+        app.MapPost("/announcements/{id}/view", async (string id, ClaimsPrincipal user, HttpContext http) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (!Guid.TryParse(id, out var aid)) return ApiResults.BadRequest("INVALID_TARGET");
+            // 로그인 → u:{sub}, 익명 → RemoteIpAddress 해시. ForwardedHeaders가 신뢰 프록시 기준으로 복원한 IP만 사용
+            // (raw XFF는 클라가 스푸핑 가능 → 미신뢰, QA4-3). 브라우저 직결이라 여기서 RemoteIpAddress는 실제 방문자.
+            var viewer = user.FindFirstValue("sub") is { Length: > 0 } sub && Guid.TryParse(sub, out _)
+                ? $"u:{sub}"
+                : $"ip:{HashIp(http)}";
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                // 게시 공지에만 기록(where exists) — 미게시 조회가 view 행을 선점 → 게시 후 첫 조회 미집계 방지(QA4-6).
+                int firstView;
+                await using (var v = new NpgsqlCommand(
+                    """
+                    insert into public.announcement_views (announcement_id, viewer)
+                    select @id, @v where exists (select 1 from public.announcements where id = @id and published)
+                    on conflict do nothing
+                    """, conn))
+                {
+                    v.Parameters.AddWithValue("id", aid);
+                    v.Parameters.AddWithValue("v", viewer);
+                    firstView = await v.ExecuteNonQueryAsync();
+                }
+                if (firstView > 0)
+                {
+                    await using var inc = new NpgsqlCommand(
+                        "update public.announcements set view_count = view_count + 1 where id = @id and published", conn);
+                    inc.Parameters.AddWithValue("id", aid);
+                    await inc.ExecuteNonQueryAsync();
+                }
+            }
+            catch (PostgresException) { /* announcement_views/view_count 없음 → skip */ }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+            return ApiResults.Ok("OK", new { });
+        });
+    }
+
+    // 익명 뷰어 식별자 — RemoteIpAddress를 솔트+SHA256으로 해시(원본 IP 미저장, 프라이버시). raw XFF는 미신뢰(QA4-3).
+    private const string ViewSalt = "glitter-ann-view-v1";
+    private static string HashIp(HttpContext http)
+    {
+        var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(ViewSalt + ip));
+        return Convert.ToHexString(bytes)[..16];
     }
 }
