@@ -187,7 +187,8 @@ else
 
     private async Task LoadStatus()
     {
-        if (id is { } aid) localeStatus = await Db.GetAnnouncementLocaleStatusAsync(aid);
+        // Edit 등 미가드 경로에서 호출돼도 pooler 순단 시 서킷이 죽지 않도록 래핑(QA4-8).
+        if (id is { } aid) await LoadAsync(async () => localeStatus = await Db.GetAnnouncementLocaleStatusAsync(aid));
     }
 
     private async Task OnLocaleChange(ChangeEventArgs e)
