@@ -125,8 +125,28 @@ public static class AnnouncementEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
 
-                // 조회 수 — 로그인 뷰어당 최초 1회만 +1(중복 제거). 익명은 미집계: 상세는 서버 컴포넌트 SSR라
-                // API가 보는 IP가 항상 Next 서버(전 방문자 collapse)이고, raw XFF는 스푸핑 가능(QA4-3)이라 신뢰 불가. best-effort.
+                (string Locale, string Title, string Body, DateTimeOffset? PublishedAt) row;
+                await using (var cmd = new NpgsqlCommand(
+                    """
+                    select l.locale, l.title, l.body, a.published_at
+                    from public.announcements a
+                    join public.announcement_locales l on l.announcement_id = a.id
+                    where a.id = @id and a.published
+                    order by (l.locale = @loc) desc, (l.locale = 'en') desc, l.locale
+                    limit 1
+                    """, conn))
+                {
+                    cmd.Parameters.AddWithValue("id", aid);
+                    cmd.Parameters.AddWithValue("loc", loc);
+                    await using var r = await cmd.ExecuteReaderAsync();
+                    if (!await r.ReadAsync()) return ApiResults.NotFound("NOT_FOUND");
+                    row = (r.GetString(0), r.GetString(1), r.GetString(2),
+                        r.IsDBNull(3) ? null : r.GetFieldValue<DateTimeOffset>(3));
+                }
+
+                // 조회 수 — 로그인 뷰어당 최초 1회만 +1(중복 제거). published/존재 확인(위 SELECT의 404) 이후 기록해
+                // 미게시 조회가 view 행을 선점 → 게시 후 첫 조회 미집계 되는 문제를 방지(QA4-6). 익명은 미집계:
+                // 상세는 서버 컴포넌트 SSR라 API가 보는 IP가 항상 Next 서버(collapse)이고 raw XFF는 스푸핑 가능(QA4-3). best-effort.
                 if (user.FindFirstValue("sub") is { Length: > 0 } sub && Guid.TryParse(sub, out _))
                 {
                     try
@@ -148,25 +168,6 @@ public static class AnnouncementEndpoints
                         }
                     }
                     catch (PostgresException) { /* announcement_views/view_count 없음 → skip */ }
-                }
-
-                (string Locale, string Title, string Body, DateTimeOffset? PublishedAt) row;
-                await using (var cmd = new NpgsqlCommand(
-                    """
-                    select l.locale, l.title, l.body, a.published_at
-                    from public.announcements a
-                    join public.announcement_locales l on l.announcement_id = a.id
-                    where a.id = @id and a.published
-                    order by (l.locale = @loc) desc, (l.locale = 'en') desc, l.locale
-                    limit 1
-                    """, conn))
-                {
-                    cmd.Parameters.AddWithValue("id", aid);
-                    cmd.Parameters.AddWithValue("loc", loc);
-                    await using var r = await cmd.ExecuteReaderAsync();
-                    if (!await r.ReadAsync()) return ApiResults.NotFound("NOT_FOUND");
-                    row = (r.GetString(0), r.GetString(1), r.GetString(2),
-                        r.IsDBNull(3) ? null : r.GetFieldValue<DateTimeOffset>(3));
                 }
 
                 int viewCount = 0;
