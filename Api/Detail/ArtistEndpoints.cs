@@ -65,13 +65,15 @@ public static class ArtistEndpoints
             // → 아티스트 페이지에서 Spotify 수록곡 호출 0(NON-41 L5).
             var albumBadges = await LoadBadgesAsync(dbConnString, albumIds, ct);
             var ratedTracks = await LoadArtistRatedTracksAsync(dbConnString, catalog.SpotifyId, ct);
+            var trackRatingsTotal = await CountArtistTrackRatingsAsync(dbConnString, catalog.SpotifyId, ct);
             var recentReviews = await LoadArtistReviewsAsync(dbConnString, catalog.SpotifyId, ct);
 
             var ratedAlbums = albums
                 .Select(a => a with { Rating = albumBadges.GetValueOrDefault(a.SpotifyId) })
                 .ToList();
             var ratedCount = ratedAlbums.Count(a => a.Rating is not null);
-            var totalRatings = albumBadges.Values.Sum(b => b.Count) + ratedTracks.Sum(t => t.Rating.Count);
+            // 트랙 총수는 표시용 limit 50 목록(ratedTracks)이 아니라 ungrouped count로 집계(QA4-4) — 50종 초과 누락 방지.
+            var totalRatings = albumBadges.Values.Sum(b => b.Count) + trackRatingsTotal;
 
             var detail = new ArtistDetail(
                 catalog.SpotifyId,
@@ -187,6 +189,28 @@ public static class ArtistEndpoints
         }
         catch (NpgsqlException) { /* 없어도 페이지는 살린다 */ }
         return list;
+    }
+
+    // 이 아티스트의 트랙 평가 총수(ungrouped). 헤더 합계용 — 표시 목록의 limit 50과 분리해 50종 초과도 정확히 집계(QA4-4).
+    private static async Task<int> CountArtistTrackRatingsAsync(
+        string? dbConnString, string artistId, CancellationToken ct)
+    {
+        if (dbConnString is null) return 0;
+        try
+        {
+            await using var conn = new NpgsqlConnection(dbConnString);
+            await conn.OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                """
+                select count(*)
+                from public.ratings
+                where target_type = 'track' and deleted_at is null
+                  and target_spotify_id is not null and target_artists @> @aj
+                """, conn);
+            cmd.Parameters.Add(new NpgsqlParameter("aj", NpgsqlTypes.NpgsqlDbType.Jsonb) { Value = ArtistJson(artistId) });
+            return (int)(long)(await cmd.ExecuteScalarAsync(ct))!;
+        }
+        catch (NpgsqlException) { return 0; }
     }
 
     // spotify_id → (평균, 개수). 구 평점(target_spotify_id null)은 매칭 안 됨(허용).
