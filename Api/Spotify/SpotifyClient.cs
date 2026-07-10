@@ -24,7 +24,9 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
     // Retry-After가 수 시간(확장 penalty)일 수 있어 앱 전체를 그만큼 막지 않도록 최대치로 캡하고,
     // 캡 이후엔 소수의 프로브만 나가 penalty를 자연 만료시킨다.
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
-    private DateTimeOffset _blockedUntil = DateTimeOffset.MinValue;
+    // DateTimeOffset(멀티워드 struct)은 원자적 읽기/쓰기 보장이 없어, 429 쓰기와 매 캐시 미스의 락-프리 읽기가
+    // 겹치면 torn read(쓰레기 타임스탬프)가 날 수 있다 → UTC ticks(long)로 저장하고 Volatile로 접근(QA4-10).
+    private long _blockedUntilTicks = DateTimeOffset.MinValue.UtcTicks;
 
     // 429 발생 시 관리자 모니터링용으로 실제 Retry-After를 DB(spotify_status)에 기록.
     private readonly string? _dbConnString = BuildDbConnString(config);
@@ -85,8 +87,9 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         var cached = await cache.GetAsync(url, ttl, ct);
         if (cached is not null) return (HttpStatusCode.OK, cached);
 
-        if (DateTimeOffset.UtcNow < _blockedUntil)
-            throw new HttpRequestException($"Spotify rate-limited (circuit open until {_blockedUntil:O})");
+        var blockedUntilTicks = Volatile.Read(ref _blockedUntilTicks);
+        if (DateTimeOffset.UtcNow.UtcTicks < blockedUntilTicks)
+            throw new HttpRequestException($"Spotify rate-limited (circuit open until {new DateTimeOffset(blockedUntilTicks, TimeSpan.Zero):O})");
 
         // single-flight: 같은 url 동시 미스는 공유 fetch 1개를 await. 공유 fetch는 caller ct와 분리
         // (한 caller가 취소해도 나머지 대기자에겐 결과가 살아있게). 각 caller는 자기 ct로 '대기'만 취소.
@@ -107,8 +110,9 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
             throw new HttpRequestException("Spotify local rate limiter queue full");
 
         // 리미터 대기 중 서킷이 열렸을 수 있어 재확인(불필요한 호출 방지).
-        if (DateTimeOffset.UtcNow < _blockedUntil)
-            throw new HttpRequestException($"Spotify rate-limited (circuit open until {_blockedUntil:O})");
+        var blockedUntilTicks = Volatile.Read(ref _blockedUntilTicks);
+        if (DateTimeOffset.UtcNow.UtcTicks < blockedUntilTicks)
+            throw new HttpRequestException($"Spotify rate-limited (circuit open until {new DateTimeOffset(blockedUntilTicks, TimeSpan.Zero):O})");
 
         var token = await GetTokenAsync(CancellationToken.None);
         using var http = factory.CreateClient();
@@ -121,7 +125,7 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         {
             var realRetry = res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
             var circuitRetry = realRetry > MaxBackoff ? MaxBackoff : realRetry; // 회로는 짧게(캡)
-            _blockedUntil = DateTimeOffset.UtcNow.Add(circuitRetry);
+            Volatile.Write(ref _blockedUntilTicks, DateTimeOffset.UtcNow.Add(circuitRetry).UtcTicks);
             await WriteRateLimitStatusAsync(DateTimeOffset.UtcNow.Add(realRetry), (int)realRetry.TotalSeconds, CancellationToken.None);
             throw new HttpRequestException(
                 $"Spotify 429 — backing off {circuitRetry.TotalSeconds:F0}s (Retry-After {realRetry.TotalSeconds:F0})");
