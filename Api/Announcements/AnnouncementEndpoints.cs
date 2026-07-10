@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Api.Common;
 using Api.Storage;
 using Npgsql;
@@ -21,7 +23,11 @@ public static class AnnouncementEndpoints
         app.MapPost("/admin/announcements/image", async (IFormFile? file, HttpRequest req, R2Storage storage, IConfiguration config, CancellationToken ct) =>
         {
             var secret = config["ADMIN:UPLOAD_SECRET"];
-            if (string.IsNullOrEmpty(secret) || (string?)req.Headers["X-Admin-Secret"] != secret) return ApiResults.Unauthorized("UNAUTHORIZED");
+            var provided = (string?)req.Headers["X-Admin-Secret"];
+            // 조기 종료 `!=`는 접두사 일치 길이에 비례한 타이밍 누출 → 고정 시간 비교(QA4-11). 시크릿 미설정 시 엔드포인트 비활성.
+            if (string.IsNullOrEmpty(secret) || string.IsNullOrEmpty(provided)
+                || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(provided), Encoding.UTF8.GetBytes(secret)))
+                return ApiResults.Unauthorized("UNAUTHORIZED");
             if (!storage.Configured) return ApiResults.ServiceUnavailable("STORAGE_NOT_CONFIGURED");
             if (file is null || file.Length == 0) return ApiResults.BadRequest("NO_FILE");
             if (file.Length > MaxImageBytes) return ApiResults.BadRequest("FILE_TOO_LARGE");
