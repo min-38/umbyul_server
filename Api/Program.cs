@@ -12,6 +12,7 @@ using Api.Feed;
 using Api.Genre;
 using Api.Inquiry;
 using Api.Legal;
+using Api.PatchNotes;
 using Api.Profile;
 using Api.Ratings;
 using Api.Search;
@@ -269,6 +270,9 @@ app.MapFaqEndpoints(dbConnString);
 
 // 공지사항 (/announcements) — 공개 조회 (NON-158)
 app.MapAnnouncementEndpoints(dbConnString);
+
+// 패치노트 (/patch-notes) — 공개 조회 (NON-159)
+app.MapPatchNoteEndpoints(dbConnString);
 
 // 문의 (/inquiries) — 공개 접수 (NON-76)
 app.MapInquiryEndpoints(dbConnString);
