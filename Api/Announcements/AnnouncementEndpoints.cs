@@ -61,7 +61,13 @@ public static class AnnouncementEndpoints
                 await conn.OpenAsync();
 
                 int total;
-                await using (var c = new NpgsqlCommand("select count(*) from public.announcements where published", conn))
+                // items는 announcement_locales와 lateral join이라 로케일 0행 공지는 탈락 →
+                // total도 같은 기준(로케일 1행 이상 존재)으로 세야 유령 페이지가 안 생김(QA4-7).
+                await using (var c = new NpgsqlCommand(
+                    """
+                    select count(*) from public.announcements a
+                    where a.published and exists (select 1 from public.announcement_locales l where l.announcement_id = a.id)
+                    """, conn))
                     total = (int)(long)(await c.ExecuteScalarAsync())!;
 
                 var rows = new List<(string Id, string Title, DateTimeOffset? PublishedAt)>();
