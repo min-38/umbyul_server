@@ -47,16 +47,24 @@ public static class AnnouncementEndpoints
             return Results.Stream(obj.Value.Content, obj.Value.ContentType);
         });
 
-        // 게시된 공지 목록(최신순). 각 공지는 요청 로케일 우선, 없으면 en 제목.
-        app.MapGet("/announcements", async (string? locale) =>
+        // 게시된 공지 목록(게시일 desc, 페이지네이션). 각 공지는 요청 로케일 우선, 없으면 en/아무거나 제목.
+        app.MapGet("/announcements", async (string? locale, int? offset, int? limit) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             var loc = string.IsNullOrWhiteSpace(locale) ? "en" : locale.Trim();
+            var off = Math.Max(0, offset ?? 0);
+            var lim = Math.Clamp(limit ?? 10, 1, 50);
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
-                await using var cmd = new NpgsqlCommand(
+
+                int total;
+                await using (var c = new NpgsqlCommand("select count(*) from public.announcements where published", conn))
+                    total = (int)(long)(await c.ExecuteScalarAsync())!;
+
+                var rows = new List<(string Id, string Title, DateTimeOffset? PublishedAt)>();
+                await using (var cmd = new NpgsqlCommand(
                     """
                     select a.id, l.title, a.published_at
                     from public.announcements a
@@ -68,19 +76,39 @@ public static class AnnouncementEndpoints
                     ) l on true
                     where a.published
                     order by a.published_at desc nulls last
-                    limit 50
-                    """, conn);
-                cmd.Parameters.AddWithValue("loc", loc);
-                var items = new List<object>();
-                await using var r = await cmd.ExecuteReaderAsync();
-                while (await r.ReadAsync())
-                    items.Add(new
+                    limit @lim offset @off
+                    """, conn))
+                {
+                    cmd.Parameters.AddWithValue("loc", loc);
+                    cmd.Parameters.AddWithValue("lim", lim);
+                    cmd.Parameters.AddWithValue("off", off);
+                    await using var r = await cmd.ExecuteReaderAsync();
+                    while (await r.ReadAsync())
+                        rows.Add((r.GetGuid(0).ToString(), r.GetString(1),
+                            r.IsDBNull(2) ? null : r.GetFieldValue<DateTimeOffset>(2)));
+                }
+
+                // 조회 수 — best-effort(0066 미적용 시 컬럼 없음 → 0).
+                var views = new Dictionary<string, int>();
+                if (rows.Count > 0)
+                    try
                     {
-                        id = r.GetGuid(0).ToString(),
-                        title = r.GetString(1),
-                        publishedAt = r.IsDBNull(2) ? (DateTimeOffset?)null : r.GetFieldValue<DateTimeOffset>(2),
-                    });
-                return ApiResults.Ok("OK", new { items });
+                        await using var vc = new NpgsqlCommand(
+                            "select id, view_count from public.announcements where id = any(@ids)", conn);
+                        vc.Parameters.AddWithValue("ids", rows.Select(x => Guid.Parse(x.Id)).ToArray());
+                        await using var vr = await vc.ExecuteReaderAsync();
+                        while (await vr.ReadAsync()) views[vr.GetGuid(0).ToString()] = vr.GetInt32(1);
+                    }
+                    catch (PostgresException) { /* view_count 컬럼 없음 → 0 */ }
+
+                var items = rows.Select(x => new
+                {
+                    id = x.Id,
+                    title = x.Title,
+                    publishedAt = x.PublishedAt,
+                    viewCount = views.GetValueOrDefault(x.Id, 0),
+                });
+                return ApiResults.Ok("OK", new { items, total });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -95,7 +123,19 @@ public static class AnnouncementEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
-                await using var cmd = new NpgsqlCommand(
+
+                // 조회 수 +1 — best-effort(게시된 것만, 컬럼 없으면 무시).
+                try
+                {
+                    await using var inc = new NpgsqlCommand(
+                        "update public.announcements set view_count = view_count + 1 where id = @id and published", conn);
+                    inc.Parameters.AddWithValue("id", aid);
+                    await inc.ExecuteNonQueryAsync();
+                }
+                catch (PostgresException) { /* view_count 컬럼 없음 */ }
+
+                (string Locale, string Title, string Body, DateTimeOffset? PublishedAt) row;
+                await using (var cmd = new NpgsqlCommand(
                     """
                     select l.locale, l.title, l.body, a.published_at
                     from public.announcements a
@@ -103,18 +143,33 @@ public static class AnnouncementEndpoints
                     where a.id = @id and a.published
                     order by (l.locale = @loc) desc, (l.locale = 'en') desc, l.locale
                     limit 1
-                    """, conn);
-                cmd.Parameters.AddWithValue("id", aid);
-                cmd.Parameters.AddWithValue("loc", loc);
-                await using var r = await cmd.ExecuteReaderAsync();
-                if (!await r.ReadAsync()) return ApiResults.NotFound("NOT_FOUND");
+                    """, conn))
+                {
+                    cmd.Parameters.AddWithValue("id", aid);
+                    cmd.Parameters.AddWithValue("loc", loc);
+                    await using var r = await cmd.ExecuteReaderAsync();
+                    if (!await r.ReadAsync()) return ApiResults.NotFound("NOT_FOUND");
+                    row = (r.GetString(0), r.GetString(1), r.GetString(2),
+                        r.IsDBNull(3) ? null : r.GetFieldValue<DateTimeOffset>(3));
+                }
+
+                int viewCount = 0;
+                try
+                {
+                    await using var vc = new NpgsqlCommand("select view_count from public.announcements where id = @id", conn);
+                    vc.Parameters.AddWithValue("id", aid);
+                    viewCount = (await vc.ExecuteScalarAsync()) is int v ? v : 0;
+                }
+                catch (PostgresException) { /* 컬럼 없음 → 0 */ }
+
                 return ApiResults.Ok("OK", new
                 {
                     id = aid.ToString(),
-                    locale = r.GetString(0),
-                    title = r.GetString(1),
-                    body = r.GetString(2),
-                    publishedAt = r.IsDBNull(3) ? (DateTimeOffset?)null : r.GetFieldValue<DateTimeOffset>(3),
+                    locale = row.Locale,
+                    title = row.Title,
+                    body = row.Body,
+                    publishedAt = row.PublishedAt,
+                    viewCount,
                 });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
