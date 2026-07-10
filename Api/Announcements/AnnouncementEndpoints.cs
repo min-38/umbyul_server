@@ -1,6 +1,4 @@
 using System.Security.Claims;
-using System.Security.Cryptography;
-using System.Text;
 using Api.Common;
 using Api.Storage;
 using Npgsql;
@@ -117,7 +115,7 @@ public static class AnnouncementEndpoints
         });
 
         // 공지 상세. 게시된 것만, 요청 로케일 우선 en 폴백. 없으면 404. 조회 수는 뷰어당 1회.
-        app.MapGet("/announcements/{id}", async (string id, string? locale, ClaimsPrincipal user, HttpContext http) =>
+        app.MapGet("/announcements/{id}", async (string id, string? locale, ClaimsPrincipal user) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (!Guid.TryParse(id, out var aid)) return ApiResults.BadRequest("INVALID_TARGET");
@@ -127,29 +125,30 @@ public static class AnnouncementEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
 
-                // 조회 수 — 뷰어(로그인 user / 익명 IP 해시)당 최초 1회만 +1(중복 제거). best-effort.
-                var viewer = user.FindFirstValue("sub") is { Length: > 0 } sub && Guid.TryParse(sub, out _)
-                    ? $"u:{sub}"
-                    : $"ip:{HashIp(http)}";
-                try
+                // 조회 수 — 로그인 뷰어당 최초 1회만 +1(중복 제거). 익명은 미집계: 상세는 서버 컴포넌트 SSR라
+                // API가 보는 IP가 항상 Next 서버(전 방문자 collapse)이고, raw XFF는 스푸핑 가능(QA4-3)이라 신뢰 불가. best-effort.
+                if (user.FindFirstValue("sub") is { Length: > 0 } sub && Guid.TryParse(sub, out _))
                 {
-                    int firstView;
-                    await using (var v = new NpgsqlCommand(
-                        "insert into public.announcement_views (announcement_id, viewer) values (@id, @v) on conflict do nothing", conn))
+                    try
                     {
-                        v.Parameters.AddWithValue("id", aid);
-                        v.Parameters.AddWithValue("v", viewer);
-                        firstView = await v.ExecuteNonQueryAsync();
+                        int firstView;
+                        await using (var v = new NpgsqlCommand(
+                            "insert into public.announcement_views (announcement_id, viewer) values (@id, @v) on conflict do nothing", conn))
+                        {
+                            v.Parameters.AddWithValue("id", aid);
+                            v.Parameters.AddWithValue("v", $"u:{sub}");
+                            firstView = await v.ExecuteNonQueryAsync();
+                        }
+                        if (firstView > 0)
+                        {
+                            await using var inc = new NpgsqlCommand(
+                                "update public.announcements set view_count = view_count + 1 where id = @id and published", conn);
+                            inc.Parameters.AddWithValue("id", aid);
+                            await inc.ExecuteNonQueryAsync();
+                        }
                     }
-                    if (firstView > 0)
-                    {
-                        await using var inc = new NpgsqlCommand(
-                            "update public.announcements set view_count = view_count + 1 where id = @id and published", conn);
-                        inc.Parameters.AddWithValue("id", aid);
-                        await inc.ExecuteNonQueryAsync();
-                    }
+                    catch (PostgresException) { /* announcement_views/view_count 없음 → skip */ }
                 }
-                catch (PostgresException) { /* announcement_views/view_count 없음 → skip */ }
 
                 (string Locale, string Title, string Body, DateTimeOffset? PublishedAt) row;
                 await using (var cmd = new NpgsqlCommand(
@@ -191,15 +190,5 @@ public static class AnnouncementEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
-    }
-
-    // 익명 뷰어 식별자 — IP를 솔트+SHA256으로 해시(원본 IP 미저장, 프라이버시). 프록시면 X-Forwarded-For 우선.
-    private const string ViewSalt = "glitter-ann-view-v1";
-    private static string HashIp(HttpContext http)
-    {
-        var ip = http.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim();
-        if (string.IsNullOrEmpty(ip)) ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(ViewSalt + ip));
-        return Convert.ToHexString(bytes)[..16];
     }
 }
