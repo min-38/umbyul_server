@@ -100,7 +100,7 @@ public sealed partial class AdminDb
         if (!Configured) return status;
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select locale, (title <> '' and body <> '') from public.announcement_locales where announcement_id = @id", conn);
+            "select locale, (btrim(title) <> '' and btrim(body) <> '') from public.announcement_locales where announcement_id = @id", conn);
         cmd.Parameters.AddWithValue("id", id);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -120,7 +120,7 @@ public sealed partial class AdminDb
             // 완성도 검사 — 필수 로케일 전부 제목·본문 있어야 게시.
             var complete = new HashSet<string>();
             await using (var chk = new NpgsqlCommand(
-                "select locale from public.announcement_locales where announcement_id = @id and title <> '' and body <> ''", conn))
+                "select locale from public.announcement_locales where announcement_id = @id and btrim(title) <> '' and btrim(body) <> ''", conn))
             {
                 chk.Parameters.AddWithValue("id", id);
                 await using var cr = await chk.ExecuteReaderAsync(ct);

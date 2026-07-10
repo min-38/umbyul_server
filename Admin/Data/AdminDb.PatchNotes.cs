@@ -101,7 +101,7 @@ public sealed partial class AdminDb
         if (!Configured) return status;
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select locale, (body <> '') from public.patch_note_locales where patch_note_id = @id", conn);
+            "select locale, (btrim(body) <> '') from public.patch_note_locales where patch_note_id = @id", conn);
         cmd.Parameters.AddWithValue("id", id);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -119,7 +119,7 @@ public sealed partial class AdminDb
         {
             var complete = new HashSet<string>();
             await using (var chk = new NpgsqlCommand(
-                "select locale from public.patch_note_locales where patch_note_id = @id and body <> ''", conn))
+                "select locale from public.patch_note_locales where patch_note_id = @id and btrim(body) <> ''", conn))
             {
                 chk.Parameters.AddWithValue("id", id);
                 await using var cr = await chk.ExecuteReaderAsync(ct);

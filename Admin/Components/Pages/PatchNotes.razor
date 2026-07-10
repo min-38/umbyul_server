@@ -221,7 +221,8 @@ else
         if (status == "released" && string.IsNullOrWhiteSpace(version)) { err = true; msg = "릴리스는 버전이 필요합니다."; return; }
         await RunAsync(async () =>
         {
-            await Db.SavePatchNoteAsync(nid, version.Trim(), status, releasedDate, locale, body, await CurrentActor());
+            // 공백-only 본문이 완성으로 집계되지 않도록 저장 시 trim(게이트/배지도 btrim, QA4-5).
+            await Db.SavePatchNoteAsync(nid, version.Trim(), status, releasedDate, locale, body.Trim(), await CurrentActor());
             err = false;
             msg = "저장됨";
             items = await Db.ListPatchNotesAsync();

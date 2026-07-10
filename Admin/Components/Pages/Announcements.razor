@@ -214,9 +214,11 @@ else
     {
         if (id is not { } aid) return;
         if (string.IsNullOrWhiteSpace(title)) { err = true; msg = "제목을 입력하세요."; return; }
+        if (string.IsNullOrWhiteSpace(body)) { err = true; msg = "본문을 입력하세요."; return; }
         await RunAsync(async () =>
         {
-            await Db.SaveAnnouncementLocaleAsync(aid, locale, title, body, await CurrentActor());
+            // 공백-only 게시로 강제 알림이 발사되지 않도록 저장 시 trim(게이트/배지도 btrim, QA4-5).
+            await Db.SaveAnnouncementLocaleAsync(aid, locale, title.Trim(), body.Trim(), await CurrentActor());
             err = false;
             msg = "저장됨";
             items = await Db.ListAnnouncementsAsync();
