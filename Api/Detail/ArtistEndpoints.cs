@@ -169,12 +169,13 @@ public static class ArtistEndpoints
             await conn.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 """
-                select target_spotify_id, max(target_name), max(target_image_url),
+                select (array_agg(target_spotify_id order by created_at desc) filter (where target_spotify_id is not null))[1],
+                       max(target_name), max(target_image_url),
                        round(avg(score), 2)::float8, count(*)
                 from public.ratings
                 where target_type = 'track' and deleted_at is null
                   and target_spotify_id is not null and target_artists @> @aj
-                group by target_spotify_id
+                group by target_id
                 order by round(avg(score), 2) desc, count(*) desc
                 limit 50
                 """, conn);

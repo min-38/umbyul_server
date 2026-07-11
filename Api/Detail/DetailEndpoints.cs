@@ -99,10 +99,21 @@ public static class DetailEndpoints
             await conn.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 """
-                select target_spotify_id, round(avg(score), 2)::float8, count(*)
-                from public.ratings
-                where target_type = 'track' and target_spotify_id = any(@ids) and deleted_at is null
-                group by target_spotify_id
+                -- 앵커(target_id=ISRC) 기준 집계 — 요청 spotify_id의 앵커로 해석 후 멀티에디션 병합(QA6-3).
+                with req as (
+                  select distinct target_spotify_id, target_id
+                  from public.ratings
+                  where target_type = 'track' and target_spotify_id = any(@ids) and deleted_at is null
+                ),
+                agg as (
+                  select r.target_id, round(avg(r.score), 2)::float8 avg, count(*) cnt
+                  from public.ratings r
+                  where r.target_type = 'track' and r.deleted_at is null
+                    and r.target_id in (select target_id from req)
+                  group by r.target_id
+                )
+                select req.target_spotify_id, agg.avg, agg.cnt
+                from req join agg on agg.target_id = req.target_id
                 """, conn);
             cmd.Parameters.AddWithValue("ids", trackIds.ToArray());
             await using var r = await cmd.ExecuteReaderAsync(ct);

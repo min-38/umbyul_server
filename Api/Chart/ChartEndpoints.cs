@@ -67,14 +67,16 @@ public static class ChartEndpoints
                 await using var cmd = new NpgsqlCommand(
                     $"""
                     with base as (
-                      select r.target_type, r.target_spotify_id,
+                      -- 앵커(target_id=ISRC/UPC) 기준 집계 — 멀티에디션 병합. 대표 spotify_id는 최신 평가 것(QA6-3).
+                      select r.target_type,
+                             (array_agg(r.target_spotify_id order by r.created_at desc) filter (where r.target_spotify_id is not null))[1] target_spotify_id,
                              count(*) v, avg(r.score) r,
                              max(r.target_name) name, max(r.target_artist) artist, max(r.target_image_url) image,
-                             (array_agg(r.target_artists) filter (where r.target_artists is not null))[1] artists,
+                             (array_agg(r.target_artists order by r.created_at desc) filter (where r.target_artists is not null))[1] artists,
                              bool_or(r.target_explicit) explicit
                       from public.ratings r
                       where r.target_spotify_id is not null and r.deleted_at is null {filters}
-                      group by r.target_type, r.target_spotify_id
+                      group by r.target_type, r.target_id
                     ),
                     gc as (
                       select avg(r.score) c from public.ratings r
