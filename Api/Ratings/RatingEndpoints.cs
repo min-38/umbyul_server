@@ -51,8 +51,8 @@ public static class RatingEndpoints
                                   target_artist = excluded.target_artist,
                                   target_image_url = excluded.target_image_url,
                                   target_artists = excluded.target_artists,
-                                  target_explicit = excluded.target_explicit,
-                                  deleted_at = null, deleted_by = null, deleted_reason = null
+                                  target_explicit = excluded.target_explicit
+                    where public.ratings.deleted_at is null
                     """, conn);
                 cmd.Parameters.AddWithValue("uid", Guid.Parse(id));
                 cmd.Parameters.AddWithValue("tt", req.TargetType!);
@@ -66,7 +66,10 @@ public static class RatingEndpoints
                 var artistsJson = req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null;
                 cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)artistsJson ?? DBNull.Value });
                 cmd.Parameters.AddWithValue("explicit", req.Explicit);
-                await cmd.ExecuteNonQueryAsync();
+                var n = await cmd.ExecuteNonQueryAsync();
+                // 충돌 대상이 모더레이션 삭제(deleted_at set)면 where 가 막아 0행 → 부활 거부(NON-252).
+                // 유저 본인 삭제는 hard delete 라 애초에 충돌이 없어(신규 insert) 여기 안 걸림.
+                if (n == 0) return ApiResults.Forbidden("REVIEW_MODERATED");
                 return ApiResults.Ok("OK");
             }
             catch (PostgresException ex) when (ex.SqlState == "23503") // FK 위반: public.users row 없음(온보딩 전)
