@@ -189,6 +189,7 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
             Username = string.IsNullOrEmpty(db["USER"]) ? "postgres" : db["USER"],
             Password = db["PASSWORD"],
             SslMode = SslMode.Require,
+            Timeout = 5, // pooler 순단 fail-fast(NON-220) — Program.cs와 동일 튜닝
         }.ConnectionString;
     }
 

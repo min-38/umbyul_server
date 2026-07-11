@@ -54,6 +54,7 @@ if (!string.IsNullOrEmpty(db["HOST"]) && !string.IsNullOrEmpty(db["PASSWORD"]))
         Username = string.IsNullOrEmpty(db["USER"]) ? "postgres" : db["USER"],
         Password = db["PASSWORD"],
         SslMode = SslMode.Require,
+        Timeout = 5, // pooler 순단 시 15s(기본) 스톨 없이 빠르게 503으로 fail-fast(NON-220)
     }.ConnectionString;
 }
 
@@ -149,6 +150,14 @@ builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>
 });
 
 var app = builder.Build();
+
+// 미처리 예외 백스톱(NON-220): 프로덕션 미처리 예외가 빈 body 500이 되지 않게 {code,data} envelope로 응답
+// — 모든 클라의 res.json() 계약 보존(QA8-1~5로 못 막은 잔여 예외의 값싼 보험).
+app.UseExceptionHandler(a => a.Run(async ctx =>
+{
+    ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+    await ctx.Response.WriteAsJsonAsync(new ApiResponse<object?>("INTERNAL", null));
+}));
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
