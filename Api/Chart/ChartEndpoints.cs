@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Api.Common;
 using Api.Profile;
+using Microsoft.Extensions.Caching.Memory;
 using Npgsql;
 
 namespace Api.Chart;
@@ -18,12 +19,17 @@ public static class ChartEndpoints
     // 성별·나이대 필터가 걸리면 소수 N 에서 개인의 성별/나이가 드러날 수 있어(재식별) 노출 임계를 올림 —
     // k-익명성(k=5). 예: "여성·20대" 필터에서 1명만 평가한 곡이 노출되면 그 1명이 특정됨 (LEG-10).
     private const int MinDemographicV = 5;
+    private static readonly TimeSpan ChartCacheTtl = TimeSpan.FromMinutes(2); // 비개인화 차트 응답 캐시 TTL(QA6-10)
 
     public static void MapChartEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/chart", async (string? type, string? sort, string? period, string? gender, string? age, int? offset, int? limit, CancellationToken ct) =>
+        app.MapGet("/chart", async (string? type, string? sort, string? period, string? gender, string? age, int? offset, int? limit, IMemoryCache cache, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+
+            // 차트는 비개인화(전 유저 동일 응답) — 파라미터 조합 키로 2분 캐시(QA6-10). 성공 응답만 캐시.
+            var cacheKey = $"chart:{type}:{sort}:{period}:{gender}:{age}:{offset}:{limit}";
+            if (cache.TryGetValue(cacheKey, out IResult? cachedResult) && cachedResult is not null) return cachedResult;
 
             var off = Math.Max(offset ?? 0, 0);
             var lim = Math.Clamp(limit ?? 50, 1, 200); // 페이지 크기(더 보기로 증가)
@@ -62,7 +68,11 @@ public static class ChartEndpoints
                 await conn.OpenAsync(ct);
 
                 if (isArtist)
-                    return await LoadArtistChartAsync(conn, artistFilters, sort, g, minv, off, lim, ct);
+                {
+                    var artistResult = await LoadArtistChartAsync(conn, artistFilters, sort, g, minv, off, lim, ct);
+                    cache.Set(cacheKey, artistResult, ChartCacheTtl);
+                    return artistResult;
+                }
 
                 await using var cmd = new NpgsqlCommand(
                     $"""
@@ -78,14 +88,15 @@ public static class ChartEndpoints
                       where r.target_spotify_id is not null and r.deleted_at is null {filters}
                       group by r.target_type, r.target_id
                     ),
-                    gc as (
-                      select avg(r.score) c from public.ratings r
-                      where r.target_spotify_id is not null and r.deleted_at is null {filters}
+                    scored as (
+                      -- 글로벌 평균(gc)을 base 1패스에서 window로 유도 → gc 재스캔 제거(QA6-10). minv 필터 전 전체 그룹 기준이라 값 동일.
+                      select b.*, sum(b.v * b.r) over () / nullif(sum(b.v) over (), 0) gc
+                      from base b
                     )
                     select b.target_type, b.target_spotify_id, b.v, round(b.r, 2)::float8,
                            b.name, b.artist, b.image, b.artists, b.explicit,
-                           (b.v::numeric / (b.v + @m)) * b.r + (@m::numeric / (b.v + @m)) * gc.c as wr
-                    from base b cross join gc
+                           (b.v::numeric / (b.v + @m)) * b.r + (@m::numeric / (b.v + @m)) * b.gc as wr
+                    from scored b
                     where b.v >= @minv
                     order by {orderBy}
                     limit @lim offset @off
@@ -106,7 +117,9 @@ public static class ChartEndpoints
                         rd.IsDBNull(6) ? null : rd.GetString(6),
                         rd.IsDBNull(7) ? null : ArtistRef.Parse(rd.GetString(7)),
                         rd.GetBoolean(8)));
-                return ApiResults.Ok("OK", new ChartData(list));
+                var result = ApiResults.Ok("OK", new ChartData(list));
+                cache.Set(cacheKey, result, ChartCacheTtl);
+                return result;
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -211,15 +224,14 @@ public static class ChartEndpoints
               where r.target_spotify_id is not null and r.deleted_at is null {filters}
               group by coalesce(elem->>'Id', elem->>'id')
             ),
-            gc as (
-              select avg(r.score) c
-              from public.ratings r
-              cross join lateral jsonb_array_elements(r.target_artists) elem
-              where r.target_spotify_id is not null and r.deleted_at is null {filters}
+            scored as (
+              -- 글로벌 평균(gc)을 base 1패스에서 window로 유도 → gc 재스캔 제거(QA6-10).
+              select b.*, sum(b.v * b.r) over () / nullif(sum(b.v) over (), 0) gc
+              from base b
             )
             select b.aid, b.aname, b.v, round(b.r, 2)::float8,
-                   (b.v::numeric / (b.v + @m)) * b.r + (@m::numeric / (b.v + @m)) * gc.c as wr
-            from base b cross join gc
+                   (b.v::numeric / (b.v + @m)) * b.r + (@m::numeric / (b.v + @m)) * b.gc as wr
+            from scored b
             where b.aid is not null and b.v >= @minv
             order by {orderBy}
             limit @lim offset @off
