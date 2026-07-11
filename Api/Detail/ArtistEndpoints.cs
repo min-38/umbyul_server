@@ -154,7 +154,7 @@ public static class ArtistEndpoints
     // 앨범별 수록곡(id·이름) 수집. 앨범당 1콜. Spotify 429(레이트리밋) 방지를 위해
     // target_artists jsonb 매칭용: [{"Id":"<artistId>"}]. ArtistRef(Id,Name)를 기본 옵션(PascalCase)으로
     // 저장하므로 키는 "Id"(대문자). 이 아티스트가 참여한 평점을 containment(@>)로 찾음.
-    private static string ArtistJson(string artistId) => $"[{{\"Id\": {JsonSerializer.Serialize(artistId)}}}]";
+    public static string ArtistJson(string artistId) => $"[{{\"Id\": {JsonSerializer.Serialize(artistId)}}}]";
 
     // 이 아티스트의 평가된 트랙(점수순). Spotify 수록곡 조회 없이 우리 ratings(target_artists)에서만(NON-41 L5).
     // 구 평점(target_artists null, 0029 이전)은 매칭 안 됨(허용) — 대신 앨범별 수록곡 라이브 호출을 제거.

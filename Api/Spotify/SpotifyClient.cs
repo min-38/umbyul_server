@@ -40,9 +40,19 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
 
     public bool Configured => !string.IsNullOrEmpty(_clientId) && !string.IsNullOrEmpty(_clientSecret);
 
+    // RATE_LIMIT_RPS 파싱 — 유효 양수만, 아니면 기본 10(QA7-2).
+    public static int ResolveRps(string? raw) => int.TryParse(raw, out var r) && r > 0 ? r : 10;
+
+    // 429 백오프 캡 — null이면 30s 기본, MaxBackoff(5min) 초과는 캡(QA7-2). 서킷은 이 캡값, DB 상태 기록은 원래 Retry-After.
+    public static TimeSpan CapBackoff(TimeSpan? retryAfter)
+    {
+        var real = retryAfter ?? TimeSpan.FromSeconds(30);
+        return real > MaxBackoff ? MaxBackoff : real;
+    }
+
     private static TokenBucketRateLimiter BuildLimiter(IConfiguration config)
     {
-        var rps = int.TryParse(config.GetSection("SPOTIFY")["RATE_LIMIT_RPS"], out var r) && r > 0 ? r : 10;
+        var rps = ResolveRps(config.GetSection("SPOTIFY")["RATE_LIMIT_RPS"]);
         return new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
         {
             TokenLimit = rps * 2,       // 버스트 허용치
@@ -123,8 +133,9 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
 
         if ((int)res.StatusCode == 429)
         {
-            var realRetry = res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(30);
-            var circuitRetry = realRetry > MaxBackoff ? MaxBackoff : realRetry; // 회로는 짧게(캡)
+            var retryAfter = res.Headers.RetryAfter?.Delta;
+            var realRetry = retryAfter ?? TimeSpan.FromSeconds(30);
+            var circuitRetry = CapBackoff(retryAfter); // 회로는 짧게(캡). DB 상태 기록은 realRetry(원래).
             Volatile.Write(ref _blockedUntilTicks, DateTimeOffset.UtcNow.Add(circuitRetry).UtcTicks);
             await WriteRateLimitStatusAsync(DateTimeOffset.UtcNow.Add(realRetry), (int)realRetry.TotalSeconds, CancellationToken.None);
             throw new HttpRequestException(
