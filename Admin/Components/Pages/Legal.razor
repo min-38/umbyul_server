@@ -187,12 +187,16 @@ else
         locale = l;
         msg = null;
         tab = "edit";
-        var doc = await Db.GetLegalDocAsync(type, locale);
-        content = doc?.Content ?? "";
-        published = doc?.Published ?? false;
-        effectiveDate = null;  // 시행일은 재게시 때 새로 정함(빈 값=게시일)
-        versions = await Db.ListLegalVersionsAsync(type, locale);
-        version = versions.Count > 0 ? versions[0].Version ?? "" : ""; // 최신 버전 라벨 프리필(bump 용)
+        // 행 클릭 시 DB 순단이면 서킷이 죽지 않게 가드(NON-218).
+        await LoadAsync(async () =>
+        {
+            var doc = await Db.GetLegalDocAsync(type, locale);
+            content = doc?.Content ?? "";
+            published = doc?.Published ?? false;
+            effectiveDate = null;  // 시행일은 재게시 때 새로 정함(빈 값=게시일)
+            versions = await Db.ListLegalVersionsAsync(type, locale);
+            version = versions.Count > 0 ? versions[0].Version ?? "" : ""; // 최신 버전 라벨 프리필(bump 용)
+        });
     }
 
     private void CloseEditor()
@@ -223,12 +227,16 @@ else
     // 과거 게시 버전 내용을 편집기(초안)로 불러옴. 게시해야 공개 반영.
     private async Task LoadVersion(Guid id)
     {
-        var c = await Db.GetLegalVersionContentAsync(id, await CurrentActor());
-        if (c is null) return;
-        content = c;
-        tab = "edit";
-        err = false;
-        msg = "이전 버전을 편집기에 불러왔습니다 (게시해야 공개 반영).";
+        // 감사 로그를 쓰고 편집 초안을 바꾸므로 순단 시 서킷 사망 방지 + 초안 유실 방지(NON-218).
+        await RunAsync(async () =>
+        {
+            var c = await Db.GetLegalVersionContentAsync(id, await CurrentActor());
+            if (c is null) return;
+            content = c;
+            tab = "edit";
+            err = false;
+            msg = "이전 버전을 편집기에 불러왔습니다 (게시해야 공개 반영).";
+        });
     }
 
     private string PreviewHtml => Admin.Services.SafeMarkdown.ToHtml(content);

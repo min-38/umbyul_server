@@ -125,7 +125,9 @@ else
         targetType = "track";
         spotifyId = "";
         note = "";
-        pickDate = await Db.NextPickDateAsync();
+        // 순단 시 서킷 사망 대신 오늘로 폴백(픽 없을 때의 기본값과 동일, NON-218).
+        try { pickDate = await Db.NextPickDateAsync(); }
+        catch (Exception) { pickDate = DateOnly.FromDateTime(DateTime.UtcNow); }
         msg = null;
     }
 
