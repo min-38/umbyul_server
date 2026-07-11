@@ -85,7 +85,7 @@ else
                 </div>
                 <textarea class="form-control form-control-sm mb-3" rows="2" placeholder="메모 (선택 · 운영자 코멘트, 카드엔 표시 안 됨)" @bind="note"></textarea>
                 <input class="form-control form-control-sm mb-1" placeholder="YouTube URL (선택 · 카드에 YouTube 아이콘 표시)" @bind="youtubeUrl" />
-                <p class="text-muted small mb-3">이미 리뷰가 있는 곡이면 정확히 연결됩니다. 아직 리뷰가 없는 곡은 리뷰가 생기기 전엔 카드에 안 뜰 수 있어요(리뷰된 음악 목록에서 다시 넣으면 확실).</p>
+                <p class="text-muted small mb-3">리뷰가 없는 곡도 카드/상세에 표시됩니다(spotify_id 매칭). 같은 곡의 다른 에디션까지 공유하려면 리뷰된 음악 목록에서 넣으세요.</p>
                 <div class="d-flex align-items-center gap-2">
                     <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
                     @if (msg is not null)

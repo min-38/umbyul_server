@@ -404,7 +404,7 @@ public static class DiscoverEndpoints
         // YouTube는 음악 고유 ID(ISRC/UPC ?? spotify_id)로 귀속 — ratings.target_id와 동일 규약.
         var (average, count, genres) = await LoadPickStatsAsync(conn, type, spotifyId, ct);
         var targetId = isrc ?? upc ?? spotifyId;
-        var youtubeUrl = await TargetLinks.YoutubeAsync(conn, type, targetId, ct);
+        var youtubeUrl = await TargetLinks.YoutubeAsync(conn, type, targetId, spotifyId, ct);
         return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note,
             average, count, genres, spotifyUrl, isrc, upc, youtubeUrl, expiresAt);
     }
