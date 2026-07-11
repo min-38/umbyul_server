@@ -206,8 +206,9 @@ public static class CommentEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
+                // 본인 삭제는 deleted_by 미기록(null) — deleted_by는 관리자(모더레이션) 삭제 전용(set_comments 컨벤션, QA6-2).
                 await using var cmd = new NpgsqlCommand(
-                    "update public.review_comments set deleted_at = now(), deleted_by = @uid where id = @cid and user_id = @uid and deleted_at is null", conn);
+                    "update public.review_comments set deleted_at = now() where id = @cid and user_id = @uid and deleted_at is null", conn);
                 cmd.Parameters.AddWithValue("cid", cid);
                 cmd.Parameters.AddWithValue("uid", uid);
                 if (await cmd.ExecuteNonQueryAsync() == 0) return ApiResults.NotFound("COMMENT_NOT_FOUND");
