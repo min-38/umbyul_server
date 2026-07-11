@@ -27,15 +27,8 @@ public static class FeedEndpoints
                 ? "and r.user_id in (select following_id from public.follows where follower_id = @me)"
                 : "";
 
-            // 계산 정렬의 페이지 간 안정성 위해 tie-breaker(id) 포함.
-            var orderBy = sort switch
-            {
-                "newest" => "created_at desc",
-                "likes" => "likes desc, created_at desc",
-                "ratio" => "wilson desc, likes desc",
-                "rising" => "recent desc, created_at desc",
-                _ => "hot desc", // 화제(기본)
-            } + ", id";
+            // 계산 정렬의 페이지 간 안정성 위해 tie-breaker(id) 포함. 닫힌 화이트리스트라 SQL 보간 안전(QA7-1).
+            var orderBy = OrderByFor(sort);
 
             try
             {
@@ -245,6 +238,16 @@ public static class FeedEndpoints
         }
         catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable) { return map; }
     }
+
+    // 피드 정렬 화이트리스트 — order by {orderBy} 직접 보간이 안전한 이유(닫힌 switch). 모든 출력은 tie-breaker ", id"로 끝남(QA7-1).
+    public static string OrderByFor(string? sort) => (sort switch
+    {
+        "newest" => "created_at desc",
+        "likes" => "likes desc, created_at desc",
+        "ratio" => "wilson desc, likes desc",
+        "rising" => "recent desc, created_at desc",
+        _ => "hot desc", // 화제(기본)
+    }) + ", id";
 
     private static Guid? Me(ClaimsPrincipal user) =>
         user.FindFirstValue("sub") is { Length: > 0 } id && Guid.TryParse(id, out var g) ? g : null;

@@ -17,7 +17,7 @@ public static class SetEndpoints
     public const int MaxTracks = 15;
 
     // 듣기 링크: null/빈값이면 통과, 값 있으면 http(s) 절대 URL이어야 함 (javascript:/data: 저장 차단 — SEC-A-6/SEC-W-1).
-    private static bool ValidListenUrl(string? url) =>
+    public static bool ValidListenUrl(string? url) =>
         string.IsNullOrWhiteSpace(url) ||
         (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps));
 

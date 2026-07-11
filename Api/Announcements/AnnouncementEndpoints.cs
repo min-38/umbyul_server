@@ -12,7 +12,7 @@ public static class AnnouncementEndpoints
 {
     private const long MaxImageBytes = 5 * 1024 * 1024; // 5MB
     // 공지 이미지 허용 타입 → 확장자.
-    private static readonly Dictionary<string, string> ImageTypes = new()
+    public static readonly Dictionary<string, string> ImageTypes = new()
     {
         ["image/jpeg"] = "jpg", ["image/png"] = "png", ["image/webp"] = "webp", ["image/gif"] = "gif",
     };
@@ -48,7 +48,7 @@ public static class AnnouncementEndpoints
         app.MapGet("/media/announcement/{**key}", async (string key, R2Storage storage, CancellationToken ct) =>
         {
             if (!storage.Configured) return Results.NotFound();
-            if (string.IsNullOrEmpty(key) || !key.StartsWith("announcements/", StringComparison.Ordinal) || key.Contains("..")) return Results.NotFound();
+            if (!IsValidAnnouncementKey(key)) return Results.NotFound();
             var obj = await storage.GetAsync(key, ct);
             if (obj is null) return Results.NotFound();
             return Results.Stream(obj.Value.Content, obj.Value.ContentType);
@@ -211,12 +211,23 @@ public static class AnnouncementEndpoints
         });
     }
 
-    // 익명 뷰어 식별자 — RemoteIpAddress를 솔트+SHA256으로 해시(원본 IP 미저장, 프라이버시). raw XFF는 미신뢰(QA4-3).
+    // 공지 이미지 프록시 키 검증 — announcements/ 접두 + 경로 이탈(..) 차단(Ordinal 대소문자). 순수 가드(QA7-1).
+    public static bool IsValidAnnouncementKey(string? key) =>
+        !string.IsNullOrEmpty(key) && key.StartsWith("announcements/", StringComparison.Ordinal) && !key.Contains("..");
+
+    // 뷰어 IP 해석 — raw XFF는 스푸핑 가능하므로 무시하고 RemoteIpAddress만 신뢰(QA4-3). null/빈 remote → "unknown".
+    public static string ResolveClientIp(string? xffHeader, string? remoteIp) =>
+        string.IsNullOrEmpty(remoteIp) ? "unknown" : remoteIp;
+
+    // 익명 뷰어 식별자 — IP를 솔트+SHA256으로 해시(원본 IP 미저장, 프라이버시). 16 hex 결정적.
     private const string ViewSalt = "glitter-ann-view-v1";
-    private static string HashIp(HttpContext http)
+    public static string HashViewer(string ip)
     {
-        var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(ViewSalt + ip));
         return Convert.ToHexString(bytes)[..16];
     }
+
+    // raw XFF는 무시(스푸핑 가능) — RemoteIpAddress만 해석해 해시(QA4-3). XFF 헤더는 무시됨을 명시적으로 전달.
+    private static string HashIp(HttpContext http) =>
+        HashViewer(ResolveClientIp(http.Request.Headers["X-Forwarded-For"].FirstOrDefault(), http.Connection.RemoteIpAddress?.ToString()));
 }
