@@ -16,6 +16,9 @@ public sealed class RetentionPurgeService(string dbConnString) : BackgroundServi
         // 로그인 u: 행은 계정 데이터라 유지(계정삭제 시 cascade).
         ("announcement_views ip:",
             "delete from public.announcement_views where viewer like 'ip:%' and created_at < now() - interval '90 days'"),
+        // QA9-2: 관리자 로그인 실패 로그(login.failed, IP는 해시 저장)는 90일 후 파기.
+        ("admin_actions login.failed",
+            "delete from public.admin_actions where action = 'login.failed' and created_at < now() - interval '90 days'"),
     ];
 
     protected override async Task ExecuteAsync(CancellationToken ct)

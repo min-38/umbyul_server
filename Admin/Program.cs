@@ -129,8 +129,10 @@ app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db, Microsoft.AspNetC
     if (admin is not { IsActive: true }) BCrypt.Net.BCrypt.Verify(password, DummyHash);
     try
     {
+        // IP는 원본 대신 솔트 해시로 저장 — 코드베이스 유일했던 raw IP 영속화 제거(SEC-A-4 일관, QA9-2).
+        // 브루트포스 상관관계(같은 IP 반복)엔 충분. 90일 후 RetentionPurgeService가 파기.
         await db.LogAsync(new Actor(null, string.IsNullOrEmpty(username) ? "?" : username), "login.failed",
-            null, ctx.Connection.RemoteIpAddress?.ToString());
+            null, HashLoginIp(ctx.Connection.RemoteIpAddress?.ToString()));
     }
     catch (NpgsqlException) { /* 감사 실패가 로그인 폼 응답을 막지 않음 */ }
     return Results.Redirect("/login?error=1");
@@ -172,6 +174,13 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+// 로그인 실패 로그의 IP 솔트 해시(QA9-2) — 원본 IP 미저장. null/빈 IP는 "unknown". 16 hex 결정적(같은 IP 상관관계 유지).
+static string HashLoginIp(string? ip) =>
+    string.IsNullOrEmpty(ip)
+        ? "unknown"
+        : System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("glitter-adm-login-v1" + ip)))[..16];
 
 // 관리자 쿠키 재발급(로그인·연장 공용): 고정 만료 + session_exp claim.
 static async Task SignInAdminAsync(HttpContext ctx, Guid id, string username, TimeSpan duration)
