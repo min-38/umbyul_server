@@ -168,7 +168,7 @@ public static class AccountEndpoints
         });
 
         // 회원 탈퇴 — auth.users 삭제 → public.users 등 cascade
-        me.MapDelete("/account", async (ClaimsPrincipal user, R2Storage storage, Api.Logging.AppLog appLog, CancellationToken ct) =>
+        me.MapDelete("/account", async (ClaimsPrincipal user, R2Storage storage, Api.Logging.AppLog appLog, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
@@ -199,7 +199,12 @@ public static class AccountEndpoints
                 appLog.Info($"account deleted: {uid}"); // 중요 이벤트(NON-249)
                 return ApiResults.Ok("OK");
             }
-            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+            // DB 다운 시 app_logs(AppLog)엔 못 남기므로 stdout(ILogger)에 기록 — 탈퇴 실패는 데이터 무결성 경로라 추적 필요(NON-257).
+            catch (NpgsqlException ex)
+            {
+                loggerFactory.CreateLogger("Account").LogWarning(ex, "회원 탈퇴 DB 실패(uid={Uid})", uid);
+                return ApiResults.ServiceUnavailable("DB_UNAVAILABLE");
+            }
         });
 
         // 내 데이터 내보내기(NON-111) — 규정 대응. 내 프로필·평가·팔로우·댓글을 JSON 으로.

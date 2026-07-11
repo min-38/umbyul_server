@@ -9,9 +9,11 @@ public sealed class R2Storage
 {
     private readonly IAmazonS3? _s3;
     private readonly string? _bucket;
+    private readonly ILogger<R2Storage> _log;
 
-    public R2Storage(IConfiguration config)
+    public R2Storage(IConfiguration config, ILogger<R2Storage> log)
     {
+        _log = log;
         var s = config.GetSection("STORAGE");
         var url = s["URL"];          // S3 엔드포인트 (https://<account>.r2.cloudflarestorage.com)
         var key = s["PUBLIC_KEY"];   // Access Key ID
@@ -84,7 +86,11 @@ public sealed class R2Storage
             } while (token is not null);
         }
         // best-effort: 스토리지 오류(네트워크/타임아웃 포함)가 탈퇴 완료를 막지 않는다(NON-219).
-        catch (Exception) { /* 스토리지 오류는 탈퇴를 막지 않음 */ }
+        // 단, 조용히 삼키지 않고 로깅 — 탈퇴(GDPR 소거) 시 PII 이미지가 잔존할 수 있으므로 추적 가능해야 함(NON-257).
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "R2 prefix 삭제 실패(prefix={Prefix}) — 작업은 계속되나 객체가 잔존할 수 있음", prefix);
+        }
     }
 
     /// 객체 스트림 + content-type. 없으면 null.
