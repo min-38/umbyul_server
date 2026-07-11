@@ -130,27 +130,31 @@ public static class SearchEndpoints
     {
         var items = new List<UserResult>();
         if (string.IsNullOrEmpty(conn)) return new CategoryResult<UserResult>(items, 0);
-
-        await using var c = new NpgsqlConnection(conn);
-        await c.OpenAsync(ct);
-
-        int total;
-        await using (var countCmd = new NpgsqlCommand("select count(*) from public.users where username ilike @q", c))
+        try
         {
-            countCmd.Parameters.AddWithValue("q", "%" + q + "%");
-            total = Convert.ToInt32(await countCmd.ExecuteScalarAsync(ct));
-        }
+            await using var c = new NpgsqlConnection(conn);
+            await c.OpenAsync(ct);
 
-        await using var cmd = new NpgsqlCommand(
-            "select id, username, avatar_url from public.users where username ilike @q order by username limit @lim offset @off", c);
-        cmd.Parameters.AddWithValue("q", "%" + q + "%");
-        cmd.Parameters.AddWithValue("lim", PageSize);
-        cmd.Parameters.AddWithValue("off", offset);
-        await using var r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct))
-        {
-            items.Add(new UserResult(r.GetGuid(0).ToString(), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2)));
+            int total;
+            await using (var countCmd = new NpgsqlCommand("select count(*) from public.users where username ilike @q", c))
+            {
+                countCmd.Parameters.AddWithValue("q", "%" + q + "%");
+                total = Convert.ToInt32(await countCmd.ExecuteScalarAsync(ct));
+            }
+
+            await using var cmd = new NpgsqlCommand(
+                "select id, username, avatar_url from public.users where username ilike @q order by username limit @lim offset @off", c);
+            cmd.Parameters.AddWithValue("q", "%" + q + "%");
+            cmd.Parameters.AddWithValue("lim", PageSize);
+            cmd.Parameters.AddWithValue("off", offset);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                items.Add(new UserResult(r.GetGuid(0).ToString(), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2)));
+            }
+            return new CategoryResult<UserResult>(items, total);
         }
-        return new CategoryResult<UserResult>(items, total);
+        // DB 순단 시 검색 전체를 죽이지 않고 빈 유저 결과로 degrade(형제 Spotify 결과는 살림, QA8-1).
+        catch (NpgsqlException) { return new CategoryResult<UserResult>([], 0); }
     }
 }

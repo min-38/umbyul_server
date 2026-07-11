@@ -46,9 +46,10 @@ public static class PublicProfileEndpoints
             string uname;
             string? avatar;
             DateTimeOffset joined;
-            await using (var ucmd = new NpgsqlCommand(
-                "select id, username, avatar_url, created_at from public.users where lower(username) = lower(@u)", conn))
+            try
             {
+                await using var ucmd = new NpgsqlCommand(
+                    "select id, username, avatar_url, created_at from public.users where lower(username) = lower(@u)", conn);
                 ucmd.Parameters.AddWithValue("u", username);
                 await using var ur = await ucmd.ExecuteReaderAsync(ct);
                 if (!await ur.ReadAsync(ct)) return ApiResults.NotFound("USER_NOT_FOUND");
@@ -57,6 +58,8 @@ public static class PublicProfileEndpoints
                 avatar = ur.IsDBNull(2) ? null : ur.GetString(2);
                 joined = ur.GetFieldValue<DateTimeOffset>(3);
             }
+            // 헤드 쿼리 순단 시 프로필 자체를 열 수 없음 → 표준 503(QA8-1).
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
 
             // 삭제(모더레이션) 리뷰는 공개엔 숨기고, 작성자 본인이 볼 때만 묘비로 노출.
             var viewer = Me(user);

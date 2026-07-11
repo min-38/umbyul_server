@@ -22,13 +22,17 @@ public static class ProfileEndpoints
             if (!ProfileValidation.IsUsername(username))
                 return ApiResults.Ok("OK", new { available = false, reason = "INVALID" });
 
-            await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync();
-            await using var cmd = new NpgsqlCommand(
-                "select 1 from public.users where lower(username) = lower(@u) limit 1", conn);
-            cmd.Parameters.AddWithValue("u", username!);
-            var taken = await cmd.ExecuteScalarAsync() is not null;
-            return ApiResults.Ok("OK", new { available = !taken, reason = taken ? "TAKEN" : null });
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "select 1 from public.users where lower(username) = lower(@u) limit 1", conn);
+                cmd.Parameters.AddWithValue("u", username!);
+                var taken = await cmd.ExecuteScalarAsync() is not null;
+                return ApiResults.Ok("OK", new { available = !taken, reason = taken ? "TAKEN" : null });
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 순단 시 빈 body 500 방지(QA8-1)
         });
 
         // 공개: 이메일 가용성(실시간 중복확인). auth.users 조회 — 가입 이메일 노출(enumeration)을
@@ -39,13 +43,17 @@ public static class ProfileEndpoints
             if (string.IsNullOrWhiteSpace(email) || !email.Contains('@'))
                 return ApiResults.Ok("OK", new { available = false, reason = "INVALID" });
 
-            await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync();
-            await using var cmd = new NpgsqlCommand(
-                "select 1 from auth.users where lower(email) = lower(@e) limit 1", conn);
-            cmd.Parameters.AddWithValue("e", email.Trim());
-            var taken = await cmd.ExecuteScalarAsync() is not null;
-            return ApiResults.Ok("OK", new { available = !taken, reason = taken ? "TAKEN" : null });
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "select 1 from auth.users where lower(email) = lower(@e) limit 1", conn);
+                cmd.Parameters.AddWithValue("e", email.Trim());
+                var taken = await cmd.ExecuteScalarAsync() is not null;
+                return ApiResults.Ok("OK", new { available = !taken, reason = taken ? "TAKEN" : null });
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 순단 시 빈 body 500 방지(QA8-1)
         }).RequireRateLimiting("email-check"); // 이메일 열거 방지: IP당 분당 제한 (SEC-A-5)
 
         var me = app.MapGroup("/me").RequireAuthorization();
@@ -56,23 +64,27 @@ public static class ProfileEndpoints
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
 
-            await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync();
-            await using var cmd = new NpgsqlCommand(
-                "select username, country, avatar_url, is_artist, created_at, locale from public.users where id = @id", conn);
-            cmd.Parameters.AddWithValue("id", Guid.Parse(id));
-            await using var r = await cmd.ExecuteReaderAsync();
-            if (!await r.ReadAsync()) return ApiResults.NotFound("PROFILE_NOT_FOUND");
-            return ApiResults.Ok("OK", new
+            try
             {
-                id,
-                username = r.GetString(0),
-                country = r.IsDBNull(1) ? null : r.GetString(1),
-                avatarUrl = r.IsDBNull(2) ? null : r.GetString(2),
-                isArtist = r.GetBoolean(3),
-                createdAt = r.GetFieldValue<DateTimeOffset>(4),
-                locale = r.IsDBNull(5) ? null : r.GetString(5),
-            });
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "select username, country, avatar_url, is_artist, created_at, locale from public.users where id = @id", conn);
+                cmd.Parameters.AddWithValue("id", Guid.Parse(id));
+                await using var r = await cmd.ExecuteReaderAsync();
+                if (!await r.ReadAsync()) return ApiResults.NotFound("PROFILE_NOT_FOUND");
+                return ApiResults.Ok("OK", new
+                {
+                    id,
+                    username = r.GetString(0),
+                    country = r.IsDBNull(1) ? null : r.GetString(1),
+                    avatarUrl = r.IsDBNull(2) ? null : r.GetString(2),
+                    isArtist = r.GetBoolean(3),
+                    createdAt = r.GetFieldValue<DateTimeOffset>(4),
+                    locale = r.IsDBNull(5) ? null : r.GetString(5),
+                });
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 세션 부트스트랩 — 순단 시 빈 body 500 방지(QA8-1)
         });
 
         // 내 제재 상태(정지/영구정지) — 상단 배너 노출용(NON-55). 마이그레이션(0018) 전이면 제재 없음으로 fail-open.
@@ -134,49 +146,53 @@ public static class ProfileEndpoints
                 return ApiResults.BadRequest("TERMS_REQUIRED");
 
             await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync();
-
-            // 멱등: 이미 프로필 있으면 조용히 통과 (이메일 가입 자동 프로비저닝의 재호출 안전)
-            await using (var exists = new NpgsqlCommand("select 1 from public.users where id = @id", conn))
-            {
-                exists.Parameters.AddWithValue("id", Guid.Parse(id));
-                if (await exists.ExecuteScalarAsync() is not null)
-                    return ApiResults.Ok("ALREADY_PROVISIONED");
-            }
-
             try
             {
-                await using var ins = new NpgsqlCommand(
-                    "insert into public.users (id, username, country, birth_date, gender, terms_accepted_at) " +
-                    "values (@id, @u, @c, @b, @g, now())", conn);
-                ins.Parameters.AddWithValue("id", Guid.Parse(id));
-                ins.Parameters.AddWithValue("u", username!);
-                ins.Parameters.AddWithValue("c", (object?)country ?? DBNull.Value);
-                ins.Parameters.AddWithValue("b", birth);
-                ins.Parameters.AddWithValue("g", (object?)gender ?? DBNull.Value);
-                await ins.ExecuteNonQueryAsync();
-            }
-            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
-            {
-                return ApiResults.Conflict("USERNAME_TAKEN");
-            }
+                await conn.OpenAsync();
 
-            // 가입 동의를 현재 게시 버전에 연결(LEG-2/5, NON-148). 테이블 미존재(마이그레이션 전)면 무시 — terms_accepted_at 폴백.
-            try
-            {
-                await ConsentEndpoints.RecordAsync(conn, Guid.Parse(id), "terms", ct);
-                await ConsentEndpoints.RecordAsync(conn, Guid.Parse(id), "privacy", ct);
-            }
-            catch (NpgsqlException) { /* user_consents 미존재 등 — 게이트 없이 통과 */ }
+                // 멱등: 이미 프로필 있으면 조용히 통과 (이메일 가입 자동 프로비저닝의 재호출 안전)
+                await using (var exists = new NpgsqlCommand("select 1 from public.users where id = @id", conn))
+                {
+                    exists.Parameters.AddWithValue("id", Guid.Parse(id));
+                    if (await exists.ExecuteScalarAsync() is not null)
+                        return ApiResults.Ok("ALREADY_PROVISIONED");
+                }
 
-            // 온보딩에서 고른 선호 장르(NON-150) — 베스트에포트(테이블 미존재·잘못된 id면 온보딩은 통과).
-            if (body?.GenreIds is { Length: > 0 } gids)
-            {
-                try { await ReplaceGenrePreferencesAsync(conn, Guid.Parse(id), gids.Distinct().Take(MaxGenrePreferences).ToList(), ct); }
-                catch (NpgsqlException) { /* user_genre_preferences 미존재·FK 등 — 무시 */ }
-            }
+                try
+                {
+                    await using var ins = new NpgsqlCommand(
+                        "insert into public.users (id, username, country, birth_date, gender, terms_accepted_at) " +
+                        "values (@id, @u, @c, @b, @g, now())", conn);
+                    ins.Parameters.AddWithValue("id", Guid.Parse(id));
+                    ins.Parameters.AddWithValue("u", username!);
+                    ins.Parameters.AddWithValue("c", (object?)country ?? DBNull.Value);
+                    ins.Parameters.AddWithValue("b", birth);
+                    ins.Parameters.AddWithValue("g", (object?)gender ?? DBNull.Value);
+                    await ins.ExecuteNonQueryAsync();
+                }
+                catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
+                {
+                    return ApiResults.Conflict("USERNAME_TAKEN");
+                }
 
-            return ApiResults.Created("PROVISIONED", new { provisioned = true });
+                // 가입 동의를 현재 게시 버전에 연결(LEG-2/5, NON-148). 테이블 미존재(마이그레이션 전)면 무시 — terms_accepted_at 폴백.
+                try
+                {
+                    await ConsentEndpoints.RecordAsync(conn, Guid.Parse(id), "terms", ct);
+                    await ConsentEndpoints.RecordAsync(conn, Guid.Parse(id), "privacy", ct);
+                }
+                catch (NpgsqlException) { /* user_consents 미존재 등 — 게이트 없이 통과 */ }
+
+                // 온보딩에서 고른 선호 장르(NON-150) — 베스트에포트(테이블 미존재·잘못된 id면 온보딩은 통과).
+                if (body?.GenreIds is { Length: > 0 } gids)
+                {
+                    try { await ReplaceGenrePreferencesAsync(conn, Guid.Parse(id), gids.Distinct().Take(MaxGenrePreferences).ToList(), ct); }
+                    catch (NpgsqlException) { /* user_genre_preferences 미존재·FK 등 — 무시 */ }
+                }
+
+                return ApiResults.Created("PROVISIONED", new { provisioned = true });
+            }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // OpenAsync·exists·insert 순단(QA8-1)
         });
 
         // 국가/성별/생년월일 정정용 조회(LEG-11). canChangeAt=null 이면 즉시 변경 가능, 아니면 그 시각 이후 가능.
@@ -185,9 +201,9 @@ public static class ProfileEndpoints
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
             await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync(ct);
             try
             {
+                await conn.OpenAsync(ct);
                 await using var cmd = new NpgsqlCommand(
                     "select country, gender, birth_date, demographics_updated_at from public.users where id = @id", conn);
                 cmd.Parameters.AddWithValue("id", Guid.Parse(id));
@@ -217,6 +233,7 @@ public static class ProfileEndpoints
                     canChangeAt = (DateTimeOffset?)null,
                 });
             }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 순단(QA8-1)
         });
 
         // 국가/성별/생년월일 정정(GDPR Art.16, LEG-11). 셋을 한 번에 갱신, 쿨다운 내 재변경은 거부(DEMOGRAPHICS_COOLDOWN).
@@ -232,9 +249,9 @@ public static class ProfileEndpoints
             if (ProfileValidation.Age(birth, DateOnly.FromDateTime(DateTime.UtcNow)) < 14) return ApiResults.BadRequest("UNDERAGE");
 
             await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync(ct);
             try
             {
+                await conn.OpenAsync(ct);
                 await using (var chk = new NpgsqlCommand("select demographics_updated_at from public.users where id = @id", conn))
                 {
                     chk.Parameters.AddWithValue("id", Guid.Parse(id));
@@ -261,6 +278,7 @@ public static class ProfileEndpoints
                 await upd.ExecuteNonQueryAsync(ct);
                 return ApiResults.Ok("OK");
             }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 순단(QA8-1)
         });
 
         // 내 선호 장르 조회(NON-150). 마이그레이션(0059) 전이면 빈 목록으로 fail-open.
@@ -269,9 +287,9 @@ public static class ProfileEndpoints
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
             await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync(ct);
             try
             {
+                await conn.OpenAsync(ct);
                 await using var cmd = new NpgsqlCommand(
                     "select genre_id from public.user_genre_preferences where user_id = @id order by genre_id", conn);
                 cmd.Parameters.AddWithValue("id", Guid.Parse(id));
@@ -284,6 +302,7 @@ public static class ProfileEndpoints
             {
                 return ApiResults.Ok("OK", new { genreIds = Array.Empty<int>() });
             }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 순단(QA8-1)
         });
 
         // 내 선호 장르 저장(NON-150). 세트 전체 교체. 장르 사전에 없는 id는 거부(FK).
@@ -293,9 +312,9 @@ public static class ProfileEndpoints
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
             var ids = (body?.GenreIds ?? []).Distinct().Take(MaxGenrePreferences).ToList();
             await using var conn = new NpgsqlConnection(dbConnString);
-            await conn.OpenAsync(ct);
             try
             {
+                await conn.OpenAsync(ct);
                 await ReplaceGenrePreferencesAsync(conn, Guid.Parse(id), ids, ct);
                 return ApiResults.Ok("OK", new { genreIds = ids });
             }
@@ -307,6 +326,7 @@ public static class ProfileEndpoints
             {
                 return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); // 마이그레이션 0059 전 — 저장 불가
             }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 순단(QA8-1)
         });
     }
 
