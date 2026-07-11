@@ -29,6 +29,14 @@ public static class ReactionEndpoints
                 await conn.OpenAsync();
                 if (await Moderation.CheckAsync(conn, uid, default) is { } block) return Moderation.ToResult(block);
 
+                // 자기 리뷰에는 반응 금지 — 셀프 좋아요가 XP·유저 차트에 무료로 집계되는 것 차단(NON-259).
+                await using (var own = new NpgsqlCommand("select user_id from public.ratings where id = @rid", conn))
+                {
+                    own.Parameters.AddWithValue("rid", rid);
+                    if (await own.ExecuteScalarAsync() is Guid authorId && authorId == uid)
+                        return ApiResults.Forbidden("SELF_REACTION");
+                }
+
                 // 같은 값이면 삭제(토글 오프). 0건이면 없었거나 다른 값 → upsert.
                 await using (var del = new NpgsqlCommand(
                     "delete from public.review_reactions where rating_id=@rid and user_id=@uid and value=@val", conn))
