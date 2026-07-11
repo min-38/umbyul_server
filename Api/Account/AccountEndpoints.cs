@@ -19,6 +19,7 @@ public static class AccountEndpoints
 
     public sealed record UsernameRequest(string? Username);
     public sealed record LocaleRequest(string? Locale);
+    public sealed record LevelVisibilityRequest(bool Hidden);
 
     public static void MapAccountEndpoints(this WebApplication app, string? dbConnString)
     {
@@ -126,6 +127,43 @@ public static class AccountEndpoints
                 await cmd.ExecuteNonQueryAsync();
                 return ApiResults.Ok("OK", new { locale = body.Locale });
             }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
+        // 레벨 공개 여부 조회(QA9-6) — 설정 페이지 초기값. 컬럼 미존재(마이그레이션 0079 전)면 false(표시).
+        me.MapGet("/level-visibility", async (ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand("select hide_level from public.users where id = @id", conn);
+                cmd.Parameters.AddWithValue("id", uid);
+                var hidden = await cmd.ExecuteScalarAsync() is true;
+                return ApiResults.Ok("OK", new { hidden });
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn) { return ApiResults.Ok("OK", new { hidden = false }); }
+            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+        });
+
+        // 레벨 공개 옵트아웃 저장(QA9-6). hidden=true면 공개 화면에서 레벨/XP 숨김.
+        me.MapPost("/level-visibility", async (LevelVisibilityRequest body, ClaimsPrincipal user) =>
+        {
+            if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
+            try
+            {
+                await using var conn = new NpgsqlConnection(dbConnString);
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand("update public.users set hide_level = @h where id = @id", conn);
+                cmd.Parameters.AddWithValue("h", body.Hidden);
+                cmd.Parameters.AddWithValue("id", uid);
+                await cmd.ExecuteNonQueryAsync();
+                return ApiResults.Ok("OK", new { hidden = body.Hidden });
+            }
+            catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // 마이그레이션 0079 전
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
 

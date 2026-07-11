@@ -20,11 +20,14 @@ public static class LevelService
         var result = new Dictionary<Guid, int>();
         if (ids.Count == 0) return result;
 
-        // 캐시 히트는 바로 채우고, 미스만 쿼리 대상으로.
+        // 레벨 공개 옵트아웃 유저(QA9-6) — 결과를 0으로 숨긴다. 캐시엔 실제 레벨을 담고 노출 시점에만 0으로 마스킹.
+        var hidden = await LoadHiddenAsync(conn, ids, ct);
+
+        // 캐시 히트는 바로 채우고(숨김이면 0으로), 미스만 쿼리 대상으로.
         var misses = new List<Guid>();
         foreach (var id in ids.Distinct())
         {
-            if (Cache.TryGetValue(id, out int lvl)) result[id] = lvl;
+            if (Cache.TryGetValue(id, out int lvl)) result[id] = hidden.Contains(id) ? 0 : lvl;
             else misses.Add(id);
         }
         if (misses.Count == 0) return result;
@@ -68,13 +71,30 @@ public static class LevelService
                     var id = rd.GetGuid(0);
                     var level = ReviewerLevel.LevelFor(ReviewerLevel.Xp(
                         (int)rd.GetInt64(1), (int)rd.GetInt64(2), (int)rd.GetInt64(3)));
-                    result[id] = level;
-                    Cache.Set(id, level, Ttl);
+                    Cache.Set(id, level, Ttl); // 캐시엔 실제 레벨(옵트아웃 토글이 풀려도 재계산 불필요)
+                    result[id] = hidden.Contains(id) ? 0 : level; // 노출은 옵트아웃 시 0(QA9-6)
                 }
                 return result;
             }
             catch (NpgsqlException) { /* 픽 없이 재시도, 그래도 실패면 캐시 히트만 반환 → 호출부 기본 Lv 1 */ }
         }
         return result;
+    }
+
+    // 레벨 공개 옵트아웃 유저 집합(QA9-6). hide_level 컬럼 미존재(마이그레이션 0079 전)면 빈 집합 → 전원 표시(현행).
+    private static async Task<HashSet<Guid>> LoadHiddenAsync(
+        NpgsqlConnection conn, IReadOnlyCollection<Guid> ids, CancellationToken ct)
+    {
+        var hidden = new HashSet<Guid>();
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                "select id from public.users where id = any(@ids) and hide_level", conn);
+            cmd.Parameters.AddWithValue("ids", ids.Distinct().ToArray());
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct)) hidden.Add(rd.GetGuid(0));
+        }
+        catch (NpgsqlException) { /* hide_level 미존재 등 → 옵트아웃 없음 */ }
+        return hidden;
     }
 }

@@ -144,6 +144,16 @@ public static class PublicProfileEndpoints
             var dailyPickReviews = await LoadDailyPickReviewsAsync(conn, uid, ct);
             var (level, xp, xpInto, xpFor) = ReviewerLevel.Compute(reviewCount, totalLikes, dailyPickReviews);
 
+            // 레벨 공개 옵트아웃(QA9-6) — 이 유저가 숨김 설정이면 레벨/XP를 0으로(웹이 뱃지·진행바 미표시).
+            // best-effort: 컬럼 미존재(마이그레이션 0079 전)면 현행대로 표시.
+            try
+            {
+                await using var hc = new NpgsqlCommand("select hide_level from public.users where id = @id", conn);
+                hc.Parameters.AddWithValue("id", uid);
+                if (await hc.ExecuteScalarAsync(ct) is true) (level, xp, xpInto, xpFor) = (0, 0, 0, 0);
+            }
+            catch (NpgsqlException) { }
+
             // 표시: denormalized 컬럼(target_name 등) 우선 — 모던 행은 Spotify 콜 0(피드·발견 방식).
             // 이름 없는 레거시(pre-0013) 활성 행만 Spotify 해석 → 평가당 1콜 폭주 제거(QA6-8).
             var legacy = rows.Where(x => !x.Deleted && x.Name is null).ToList();

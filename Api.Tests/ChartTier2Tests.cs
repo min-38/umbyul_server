@@ -19,6 +19,20 @@ public class ChartTier2Tests
     public void MinVFor_cases(string? gender, string? age, int expected) =>
         Assert.Equal(expected, ChartEndpoints.MinVFor(gender, age));
 
+    // BucketCount(QA9-6) — 인구통계 필터 시 5단위 반올림, 비필터면 정확값. 필터 최소는 5(0으로 안 떨어짐).
+    [Theory]
+    [InlineData(5, 5)]
+    [InlineData(7, 5)]
+    [InlineData(8, 10)]
+    [InlineData(12, 10)]
+    [InlineData(13, 15)]
+    public void BucketCount_rounds_to_5_when_demographic(int v, int expected) =>
+        Assert.Equal(expected, ChartEndpoints.BucketCount(v, true));
+
+    [Fact]
+    public void BucketCount_exact_when_not_demographic() =>
+        Assert.Equal(7, ChartEndpoints.BucketCount(7, false));
+
     // IntervalFor — 닫힌 화이트리스트, 기본 year.
     [Theory]
     [InlineData("day", "1 day")]

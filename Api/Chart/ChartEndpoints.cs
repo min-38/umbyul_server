@@ -94,11 +94,12 @@ public static class ChartEndpoints
                 if (t is not null) cmd.Parameters.AddWithValue("type", t);
                 if (g is not null) cmd.Parameters.AddWithValue("gender", g);
 
+                var demographic = minv == MinDemographicV; // 인구통계 필터 활성 → 카운트 버킷팅(QA9-6)
                 var list = new List<ChartItem>();
                 await using var rd = await cmd.ExecuteReaderAsync(ct);
                 while (await rd.ReadAsync(ct))
                     list.Add(new ChartItem(
-                        rd.GetString(0), rd.GetString(1), (int)rd.GetInt64(2), rd.GetDouble(3),
+                        rd.GetString(0), rd.GetString(1), BucketCount((int)rd.GetInt64(2), demographic), rd.GetDouble(3),
                         rd.IsDBNull(4) ? null : rd.GetString(4), rd.IsDBNull(5) ? null : rd.GetString(5),
                         rd.IsDBNull(6) ? null : rd.GetString(6),
                         rd.IsDBNull(7) ? null : ArtistRef.Parse(rd.GetString(7)),
@@ -218,6 +219,11 @@ public static class ChartEndpoints
     public static int MinVFor(string? gender, string? age) =>
         gender is "male" or "female" || age is "10" or "20" or "30" or "40" or "50" ? MinDemographicV : MinV;
 
+    // 인구통계 필터 차트의 표시 카운트는 정확값 대신 5단위로 반올림(QA9-6 결정1) — 차분 공격·v=5 근처 재식별 완화.
+    // 비필터(bucket=false)면 정확값 유지. 필터 시 v>=MinDemographicV(5) 보장이라 최소 버킷도 5(0으로 안 떨어짐).
+    public static int BucketCount(int v, bool bucket) =>
+        bucket ? (int)(Math.Round(v / 5.0, MidpointRounding.AwayFromZero) * 5) : v;
+
     // 아티스트 차트(NON-87): 앨범/곡 평가를 target_artists 로 펼쳐 아티스트별 집계. 커버 없음.
     private static async Task<IResult> LoadArtistChartAsync(
         NpgsqlConnection conn, string filters, string? sort, string? gender, int minv, int off, int lim, CancellationToken ct)
@@ -252,12 +258,13 @@ public static class ChartEndpoints
         cmd.Parameters.AddWithValue("off", off);
         if (gender is not null) cmd.Parameters.AddWithValue("gender", gender);
 
+        var demographic = minv == MinDemographicV; // 인구통계 필터 활성 → 카운트 버킷팅(QA9-6)
         var list = new List<ArtistRankItem>();
         await using var rd = await cmd.ExecuteReaderAsync(ct);
         while (await rd.ReadAsync(ct))
             list.Add(new ArtistRankItem(
                 rd.GetString(0), rd.IsDBNull(1) ? null : rd.GetString(1),
-                (int)rd.GetInt64(2), rd.GetDouble(3)));
+                BucketCount((int)rd.GetInt64(2), demographic), rd.GetDouble(3)));
         return ApiResults.Ok("OK", new ArtistChartData(list));
     }
 
