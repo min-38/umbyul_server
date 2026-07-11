@@ -168,7 +168,7 @@ public static class AccountEndpoints
         });
 
         // 회원 탈퇴 — auth.users 삭제 → public.users 등 cascade
-        me.MapDelete("/account", async (ClaimsPrincipal user, R2Storage storage, CancellationToken ct) =>
+        me.MapDelete("/account", async (ClaimsPrincipal user, R2Storage storage, Api.Logging.AppLog appLog, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (Sub(user) is not { } uid) return ApiResults.Unauthorized("UNAUTHORIZED");
@@ -196,6 +196,7 @@ public static class AccountEndpoints
                 await tx.CommitAsync();
                 // DB 삭제 확정 후 R2 아바타 정리(GDPR 소거 — LEG-3). 실패해도 탈퇴는 성공 처리(best-effort).
                 await storage.DeletePrefixAsync($"avatars/{uid}/", ct);
+                appLog.Info($"account deleted: {uid}"); // 중요 이벤트(NON-249)
                 return ApiResults.Ok("OK");
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }

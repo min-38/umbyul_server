@@ -120,7 +120,7 @@ public static class ProfileEndpoints
         });
 
         // 프로비저닝 — body 또는 user_metadata(이메일 가입)에서 username/country/동의 취득. username UNIQUE 보장.
-        me.MapPost("/profile", async (ProvisionRequest? body, ClaimsPrincipal user, CancellationToken ct) =>
+        me.MapPost("/profile", async (ProvisionRequest? body, ClaimsPrincipal user, Api.Logging.AppLog appLog, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } id) return ApiResults.Unauthorized("UNAUTHORIZED");
@@ -190,6 +190,7 @@ public static class ProfileEndpoints
                     catch (NpgsqlException) { /* user_genre_preferences 미존재·FK 등 — 무시 */ }
                 }
 
+                appLog.Info($"account provisioned: {id} ({username})"); // 중요 이벤트(NON-249)
                 return ApiResults.Created("PROVISIONED", new { provisioned = true });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); } // OpenAsync·exists·insert 순단(QA8-1)

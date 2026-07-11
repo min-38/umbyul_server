@@ -123,6 +123,8 @@ if (dbConnString is not null)
     builder.Logging.AddProvider(new Api.Logging.DbLoggerProvider(logSink));
     builder.Logging.AddFilter<Api.Logging.DbLoggerProvider>(null, LogLevel.Trace);
 }
+// 중요 비즈니스 이벤트 로깅 헬퍼(NON-249) — 엔드포인트 주입용. 싱크 미등록(DB 미설정)이면 no-op.
+builder.Services.AddSingleton(sp => new Api.Logging.AppLog(sp.GetService<Api.Logging.DbLogSink>()));
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 

@@ -29,6 +29,11 @@ public sealed class DbLogSink(string connString) : BackgroundService
 
     public void Enqueue(AppLogEntry entry) => _channel.Writer.TryWrite(entry);
 
+    /// 중요 비즈니스 이벤트 기록(NON-52 / NON-249) — 개발자가 '중요'로 명시한 것이라 min_level 게이트를
+    /// 우회해 항상 기록한다(min_level은 프레임워크·부가 로그의 노이즈 바닥만 제어). 채널 만차면 드롭.
+    public void LogEvent(LogLevel level, string category, string message, Exception? ex = null) =>
+        Enqueue(new AppLogEntry(level, message, ex?.ToString(), category, 0, DateTimeOffset.UtcNow));
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         var lastConfig = DateTimeOffset.MinValue;

@@ -14,7 +14,7 @@ public static class ReportEndpoints
     {
         var me = app.MapGroup("/me").RequireAuthorization();
 
-        me.MapPost("/reports", async (ReportRequest req, ClaimsPrincipal user) =>
+        me.MapPost("/reports", async (ReportRequest req, ClaimsPrincipal user, Api.Logging.AppLog appLog) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (user.FindFirstValue("sub") is not { Length: > 0 } sub || !Guid.TryParse(sub, out var uid))
@@ -43,6 +43,7 @@ public static class ReportEndpoints
                 cmd.Parameters.AddWithValue("reason", req.Reason!);
                 cmd.Parameters.AddWithValue("detail", (object?)detail ?? DBNull.Value);
                 await cmd.ExecuteNonQueryAsync();
+                appLog.Info($"report submitted: {req.TargetType}/{req.TargetId} reason={req.Reason} by {uid}"); // 중요 이벤트(NON-249)
                 return ApiResults.Ok("OK");
             }
             catch (PostgresException ex) when (ex.SqlState == "23503")
