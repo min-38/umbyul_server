@@ -244,4 +244,17 @@ public sealed partial class AdminDb
         }
         await LogAsync(conn, actor, handled ? "inquiry.handled" : "inquiry.reopen", id.ToString(), null, ct);
     }
+
+    // 개별 hard-delete(QA9-5) — 이메일 삭제 요청 이행 수단. 감사 로그엔 id만(이메일·본문 미기록).
+    public async Task DeleteInquiryAsync(Guid id, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using (var cmd = new NpgsqlCommand("delete from public.inquiries where id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("id", id);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, "inquiry.delete", id.ToString(), null, ct);
+    }
 }

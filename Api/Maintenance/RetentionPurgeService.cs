@@ -19,6 +19,9 @@ public sealed class RetentionPurgeService(string dbConnString) : BackgroundServi
         // QA9-2: 관리자 로그인 실패 로그(login.failed, IP는 해시 저장)는 90일 후 파기.
         ("admin_actions login.failed",
             "delete from public.admin_actions where action = 'login.failed' and created_at < now() - interval '90 days'"),
+        // QA9-5: 처리 완료된 문의(이메일+자유텍스트, user_id 링크 없어 계정삭제 cascade 밖)는 1년 후 파기.
+        ("inquiries handled",
+            "delete from public.inquiries where handled and handled_at < now() - interval '1 year'"),
     ];
 
     protected override async Task ExecuteAsync(CancellationToken ct)
