@@ -409,16 +409,17 @@ public static class DiscoverEndpoints
             average, count, genres, spotifyUrl, isrc, upc, youtubeUrl, expiresAt);
     }
 
-    // 오늘(KST) 픽 1건만 읽기(NON-263). 오늘 픽이 없으면 null → 만료된 어제 픽을 폴백 노출하지 않는다.
-    // daily_picks(0061) 없으면 null.
+    // 현재 픽(KST 06:00 롤오버) 1건만 읽기(NON-263/269). 해당 픽이 없으면 null → 만료된 이전 픽을 폴백 노출하지 않는다.
+    // 전 세계 단일 픽 — KST 06:00 고정 롤오버(타임존별 분리 없음). daily_picks(0061) 없으면 null.
     private static async Task<(string Type, string SpotifyId, string? Note, DateTimeOffset ExpiresAt)?> ReadActivePickAsync(
         NpgsqlConnection conn, CancellationToken ct)
     {
         try
         {
-            // expires_at = 픽 날짜 다음날 KST 자정(= 오늘 픽 마감 시각)을 UTC instant 로(NON-264 카운트다운).
+            // 롤오버는 KST 06:00(NON-269). 현재 유효 pick_date = (KST now - 6h)의 날짜 →
+            //   D 06:00 ~ (D+1) 06:00 동안 pick_date=D 노출. expires_at = (D+1) 06:00 KST 를 UTC instant 로(카운트다운).
             await using var cmd = new NpgsqlCommand(
-                "select target_type, target_spotify_id, note, (pick_date + 1)::timestamp at time zone 'Asia/Seoul' from public.daily_picks where pick_date = (timezone('Asia/Seoul', now()))::date limit 1", conn);
+                "select target_type, target_spotify_id, note, ((pick_date + 1)::timestamp + interval '6 hours') at time zone 'Asia/Seoul' from public.daily_picks where pick_date = (timezone('Asia/Seoul', now()) - interval '6 hours')::date limit 1", conn);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             if (!await r.ReadAsync(ct)) return null;
             return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetFieldValue<DateTimeOffset>(3));
