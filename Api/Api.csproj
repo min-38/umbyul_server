@@ -11,6 +11,8 @@
     <PackageReference Include="AWSSDK.S3" Version="4.0.100" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.8" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
+    <!-- 전이 의존성 Microsoft.OpenApi 2.0.0(NU1903 high, GHSA-v5pm-xwqc-g5wc)을 패치 버전으로 오버라이드(QA7-7). -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
