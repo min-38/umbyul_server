@@ -294,8 +294,88 @@ public static class AccountEndpoints
                 }
                 catch (NpgsqlException) { } // announcement_views 미존재 등 — 생략
 
+                // 온보딩 선호 장르(유저 직접 선택) — 가장 명백한 갭(QA9-4 #1).
+                var genrePreferences = new List<ExportGenrePreference>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select g.name, ugp.created_at from public.user_genre_preferences ugp join public.genres g on g.id = ugp.genre_id where ugp.user_id = @id order by ugp.created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        genrePreferences.Add(new ExportGenrePreference(r.GetString(0), r.GetFieldValue<DateTimeOffset>(1)));
+                }
+                catch (NpgsqlException) { }
+
+                // 장르 투표(크라우드 태깅) — 유저가 매긴 태그(QA9-4 #2).
+                var genreVotes = new List<ExportGenreVote>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select gt.target_type, gt.target_spotify_id, g.name, gt.created_at from public.genre_tags gt join public.genres g on g.id = gt.genre_id where gt.user_id = @id order by gt.created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        genreVotes.Add(new ExportGenreVote(r.GetString(0), r.GetString(1), r.GetString(2), r.GetFieldValue<DateTimeOffset>(3)));
+                }
+                catch (NpgsqlException) { }
+
+                // 동의 이력(약관/개인정보 재동의) — Art.15 접근권(QA9-4 #3). 버전 published_at·locale로 무엇에 동의했는지.
+                var consents = new List<ExportConsent>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select uc.type, lv.locale, lv.published_at, uc.accepted_at from public.user_consents uc left join public.legal_versions lv on lv.id = uc.version_id where uc.user_id = @id order by uc.accepted_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        consents.Add(new ExportConsent(
+                            r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1),
+                            r.IsDBNull(2) ? null : r.GetFieldValue<DateTimeOffset>(2), r.GetFieldValue<DateTimeOffset>(3)));
+                }
+                catch (NpgsqlException) { }
+
+                // 리액션/좋아요 준 것(QA9-4 #4) — 리뷰 좋아요·싫어요, 믹스 좋아요, 댓글 좋아요.
+                var reviewReactions = new List<ExportReviewReaction>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select r.target_type, r.target_spotify_id, rr.value, rr.created_at from public.review_reactions rr join public.ratings r on r.id = rr.rating_id where rr.user_id = @id order by rr.created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        reviewReactions.Add(new ExportReviewReaction(
+                            r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetString(2), r.GetFieldValue<DateTimeOffset>(3)));
+                }
+                catch (NpgsqlException) { }
+
+                var mixLikes = new List<ExportMixLike>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select s.title, sl.created_at from public.set_likes sl join public.sets s on s.id = sl.set_id where sl.user_id = @id order by sl.created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        mixLikes.Add(new ExportMixLike(r.GetString(0), r.GetFieldValue<DateTimeOffset>(1)));
+                }
+                catch (NpgsqlException) { }
+
+                var commentLikes = new List<ExportCommentLike>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select rc.body, cl.created_at from public.comment_likes cl join public.review_comments rc on rc.id = cl.comment_id where cl.user_id = @id order by cl.created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        commentLikes.Add(new ExportCommentLike(r.IsDBNull(0) ? null : r.GetString(0), r.GetFieldValue<DateTimeOffset>(1)));
+                }
+                catch (NpgsqlException) { }
+
                 return ApiResults.Ok("OK", new ExportData(
-                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked, announcementViews, setComments));
+                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked, announcementViews, setComments,
+                    genrePreferences, genreVotes, consents, reviewReactions, mixLikes, commentLikes));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -333,7 +413,13 @@ public sealed record ExportData(
     IReadOnlyList<string> Followers, IReadOnlyList<ExportComment> Comments,
     IReadOnlyList<ExportSet> Sets, IReadOnlyList<string> Blocked,
     IReadOnlyList<ExportAnnouncementView> AnnouncementViews,
-    IReadOnlyList<ExportComment> SetComments);
+    IReadOnlyList<ExportComment> SetComments,
+    IReadOnlyList<ExportGenrePreference> GenrePreferences,
+    IReadOnlyList<ExportGenreVote> GenreVotes,
+    IReadOnlyList<ExportConsent> Consents,
+    IReadOnlyList<ExportReviewReaction> ReviewReactions,
+    IReadOnlyList<ExportMixLike> MixLikes,
+    IReadOnlyList<ExportCommentLike> CommentLikes);
 public sealed record ExportProfile(
     string Username, string? Email, string? Country, string? BirthDate, string? Gender, string? Locale, string? AvatarUrl, DateTimeOffset JoinedAt);
 public sealed record ExportRating(
@@ -343,3 +429,9 @@ public sealed record ExportComment(string Body, DateTimeOffset CreatedAt);
 public sealed record ExportSet(string Title, string? Note, string? ListenUrl, DateTimeOffset CreatedAt, IReadOnlyList<ExportSetTrack> Tracks);
 public sealed record ExportSetTrack(string SpotifyId, string Name, string Artist, int Position);
 public sealed record ExportAnnouncementView(string AnnouncementId, string? Title, DateTimeOffset ViewedAt);
+public sealed record ExportGenrePreference(string Genre, DateTimeOffset CreatedAt);
+public sealed record ExportGenreVote(string TargetType, string SpotifyId, string Genre, DateTimeOffset CreatedAt);
+public sealed record ExportConsent(string Type, string? Locale, DateTimeOffset? VersionPublishedAt, DateTimeOffset AcceptedAt);
+public sealed record ExportReviewReaction(string TargetType, string? SpotifyId, string Value, DateTimeOffset CreatedAt);
+public sealed record ExportMixLike(string Title, DateTimeOffset CreatedAt);
+public sealed record ExportCommentLike(string? CommentBody, DateTimeOffset CreatedAt);
