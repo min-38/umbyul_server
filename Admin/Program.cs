@@ -6,6 +6,7 @@ using Admin.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +19,8 @@ builder.Services.AddRazorComponents()
 builder.Services.AddSingleton<AdminDb>();
 builder.Services.AddScoped<SessionGuard>(); // 서킷당 진행 중 작업 추적(NON-53)
 builder.Services.AddHttpClient(); // 공지 이미지 업로드 → Api(R2) 프록시 호출(NON-168)
+// 업로드 전용 named client — 기본 100s 대신 15s로 제한해 Api/R2 행 시 빨리 에러 배너로 전환(NON-222).
+builder.Services.AddHttpClient("upload", c => c.Timeout = TimeSpan.FromSeconds(15));
 
 // 관리자 계정(별도 admins 테이블) + 쿠키 세션.
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -111,17 +114,25 @@ app.MapPost("/auth/login", async (HttpContext ctx, AdminDb db, Microsoft.AspNetC
     var form = await ctx.Request.ReadFormAsync();
     var username = form["username"].ToString();
     var password = form["password"].ToString();
-    var admin = await db.GetAdminAuthAsync(username);
+    // 인증 조회 순단은 /Error(예외 핸들러) 대신 로그인 폼 에러로(NON-222).
+    (Guid Id, string Username, string Hash, bool IsActive)? admin;
+    try { admin = await db.GetAdminAuthAsync(username); }
+    catch (NpgsqlException) { return Results.Redirect("/login?error=1"); }
     if (admin is { } a && a.IsActive && BCrypt.Net.BCrypt.Verify(password, a.Hash)) // 비활성 관리자는 로그인 차단(NON-103)
     {
         await SignInAdminAsync(ctx, a.Id, a.Username, SessionDuration);
-        await db.LogAsync(new Actor(a.Id, a.Username), "login", null, null);
+        // 감사 로그는 best-effort — SignIn 후 throw하면 예외 핸들러가 Set-Cookie를 지워 로그인이 무산되므로(NON-222).
+        try { await db.LogAsync(new Actor(a.Id, a.Username), "login", null, null); } catch (NpgsqlException) { }
         return Results.Redirect("/");
     }
     // 유저 부재/비활성 시에도 동일 비용의 해시 검증 → 응답시간 기반 유저 열거 방지(ADM-3).
     if (admin is not { IsActive: true }) BCrypt.Net.BCrypt.Verify(password, DummyHash);
-    await db.LogAsync(new Actor(null, string.IsNullOrEmpty(username) ? "?" : username), "login.failed",
-        null, ctx.Connection.RemoteIpAddress?.ToString());
+    try
+    {
+        await db.LogAsync(new Actor(null, string.IsNullOrEmpty(username) ? "?" : username), "login.failed",
+            null, ctx.Connection.RemoteIpAddress?.ToString());
+    }
+    catch (NpgsqlException) { /* 감사 실패가 로그인 폼 응답을 막지 않음 */ }
     return Results.Redirect("/login?error=1");
 }).DisableAntiforgery().RequireRateLimiting("login"); // 미들웨어 자동검증은 끄고 위에서 수동 검증(ADM-8)
 
@@ -137,7 +148,8 @@ app.MapPost("/auth/refresh", async (HttpContext ctx, AdminDb db) =>
         return Results.Redirect("/login");
     }
     await SignInAdminAsync(ctx, id, ctx.User.Identity.Name ?? "", SessionDuration);
-    await db.LogAsync(new Actor(id, ctx.User.Identity.Name ?? "?"), "session.refresh", null, null);
+    // 감사 로그 best-effort — 쿠키 재발급 후 throw 시 헤더 소실로 연장이 무산되는 것 방지(NON-222).
+    try { await db.LogAsync(new Actor(id, ctx.User.Identity.Name ?? "?"), "session.refresh", null, null); } catch (NpgsqlException) { }
     var back = ctx.Request.Headers.Referer.ToString();
     return Results.Redirect(string.IsNullOrEmpty(back) ? "/" : back);
 }).RequireAuthorization().DisableAntiforgery();
@@ -148,7 +160,8 @@ app.MapMethods("/auth/logout", ["GET", "POST"], async (HttpContext ctx, AdminDb 
     if (ctx.User.Identity?.IsAuthenticated == true)
     {
         Guid.TryParse(ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id);
-        await db.LogAsync(new Actor(id, ctx.User.Identity.Name ?? "?"), "logout", null, null);
+        // 감사 로그 best-effort — DB 순단이 로그아웃(쿠키 삭제)을 막지 않게, 공용 PC 세션 종료 보장(NON-222).
+        try { await db.LogAsync(new Actor(id, ctx.User.Identity.Name ?? "?"), "logout", null, null); } catch (NpgsqlException) { }
     }
     await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
     return Results.Redirect("/login");

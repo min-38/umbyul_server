@@ -271,7 +271,7 @@ else
             var sc = new StreamContent(stream);
             sc.Headers.ContentType = new MediaTypeHeaderValue(f.ContentType);
             content.Add(sc, "file", f.Name);
-            var client = Http.CreateClient();
+            var client = Http.CreateClient("upload"); // 15s 타임아웃(NON-222)
             client.DefaultRequestHeaders.Add("X-Admin-Secret", secret);
             var res = await client.PostAsync($"{apiUrl.TrimEnd('/')}/admin/announcements/image", content);
             if (!res.IsSuccessStatusCode) { err = true; msg = $"업로드 실패({(int)res.StatusCode})"; return; }

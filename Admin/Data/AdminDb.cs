@@ -20,6 +20,8 @@ public sealed partial class AdminDb(IConfiguration config)
             Username = string.IsNullOrEmpty(db["USER"]) ? "postgres" : db["USER"],
             Password = db["PASSWORD"],
             SslMode = SslMode.Require,
+            Timeout = 5,         // pooler 순단 시 15s(기본) 스톨 대신 fail-fast → 기존 에러 배너로 빨리 전환(NON-222)
+            CommandTimeout = 15, // 장시간 스톨 방지
         }.ConnectionString;
     }
 
@@ -232,7 +234,8 @@ public sealed partial class AdminDb(IConfiguration config)
                 r.IsDBNull(1) ? null : r.GetInt32(1),
                 r.IsDBNull(2) ? null : r.GetFieldValue<DateTimeOffset>(2));
         }
-        catch (NpgsqlException) { return null; } // 마이그레이션 전 등
+        // 테이블 미존재(마이그레이션 전)만 null로 흡수 — 순단은 전파해 상태 페이지가 unknown을 healthy로 오표시하지 않게(NON-222).
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable) { return null; }
     }
 
     public async Task<(long Count, DateTimeOffset? Latest)> GetCacheStatsAsync(CancellationToken ct = default)
@@ -246,7 +249,8 @@ public sealed partial class AdminDb(IConfiguration config)
             await r.ReadAsync(ct);
             return (r.GetInt64(0), r.IsDBNull(1) ? null : r.GetFieldValue<DateTimeOffset>(1));
         }
-        catch (NpgsqlException) { return (0, null); }
+        // 테이블 미존재만 (0,null)로 흡수 — 순단은 전파(NON-222).
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable) { return (0, null); }
     }
 
     // ── 대시보드(NON-100) ── 운영 지표를 한 번의 왕복으로 집계.

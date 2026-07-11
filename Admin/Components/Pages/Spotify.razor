@@ -2,6 +2,8 @@
 @attribute [Authorize]
 @rendermode InteractiveServer
 @using Admin.Data
+@using Admin.Components
+@inherits AdminPageBase
 @inject AdminDb Db
 
 <PageTitle>Spotify 상태</PageTitle>
@@ -14,6 +16,12 @@
 @if (!Db.Configured)
 {
     <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else if (Error is not null)
+{
+    @* 순단 시 unknown을 "차단 없음"(초록)으로 오표시하지 않고 조회 실패를 명시(NON-222). *@
+    <div class="alert alert-danger py-2">@Error</div>
+    <button class="btn btn-sm btn-outline-secondary" @onclick="Load">다시 시도</button>
 }
 else if (!loaded)
 {
@@ -78,9 +86,13 @@ else
     private async Task Load()
     {
         loaded = false;
-        status = await Db.GetSpotifyStatusAsync();
-        (cacheCount, cacheLatest) = await Db.GetCacheStatsAsync();
-        loaded = true;
+        // 조회 실패(순단)는 LoadAsync가 Error 배너로 — "차단 없음"으로 오표시 방지(NON-222).
+        await LoadAsync(async () =>
+        {
+            status = await Db.GetSpotifyStatusAsync();
+            (cacheCount, cacheLatest) = await Db.GetCacheStatsAsync();
+            loaded = true;
+        });
     }
 
     private bool Blocked => status?.BlockedUntil is { } b && b > DateTimeOffset.UtcNow;
