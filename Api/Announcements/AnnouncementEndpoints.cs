@@ -41,7 +41,7 @@ public static class AnnouncementEndpoints
             }
             catch (Exception) { return ApiResults.ServiceUnavailable("UPLOAD_FAILED"); }
 
-            return ApiResults.Ok("OK", new { url = $"{req.Scheme}://{req.Host}/media/announcement/{key}" });
+            return ApiResults.Ok("OK", new { url = $"{Api.Common.PublicUrl.Base(config, req)}/media/announcement/{key}" });
         }).DisableAntiforgery();
 
         // 공지 이미지 서빙(공개) — R2 프록시(아바타 프록시 미러).

@@ -93,8 +93,13 @@ builder.Services
 builder.Services.AddAuthorization();
 
 // CORS — 브라우저(web)가 .NET Api 를 직접 호출(온보딩 username 실시간 검사 등). 토큰은 Authorization 헤더.
-var webOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?? ["http://localhost:3000"];
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+// 프로덕션에서 미설정이면 fail-fast — localhost 기본값은 배포 도메인에서 브라우저 직접 호출(온보딩/이메일·유저명 확인/
+// 검색 더보기/공지 조회)을 전부 막는다. 조용히 뜨는 것보다 부팅을 세워 설정 누락을 드러낸다(NON-254).
+if (!builder.Environment.IsDevelopment() && corsOrigins is not { Length: > 0 })
+    throw new InvalidOperationException(
+        "Cors:AllowedOrigins 미설정 — 프로덕션에서는 web 도메인을 명시해야 브라우저 직접 호출이 동작합니다.");
+var webOrigins = corsOrigins is { Length: > 0 } ? corsOrigins : ["http://localhost:3000"];
 builder.Services.AddCors(o => o.AddPolicy("web", p =>
     p.WithOrigins(webOrigins).AllowAnyHeader().AllowAnyMethod()));
 

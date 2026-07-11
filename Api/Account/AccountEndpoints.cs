@@ -26,7 +26,7 @@ public static class AccountEndpoints
         var me = app.MapGroup("/me").RequireAuthorization();
 
         // 아바타 업로드 → R2 → avatar_url 갱신
-        me.MapPost("/avatar", async (IFormFile? file, ClaimsPrincipal user, R2Storage storage, HttpRequest req, CancellationToken ct) =>
+        me.MapPost("/avatar", async (IFormFile? file, ClaimsPrincipal user, R2Storage storage, HttpRequest req, IConfiguration config, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
             if (!storage.Configured) return ApiResults.ServiceUnavailable("STORAGE_NOT_CONFIGURED");
@@ -46,7 +46,7 @@ public static class AccountEndpoints
                 return ApiResults.ServiceUnavailable("UPLOAD_FAILED");
             }
 
-            var avatarUrl = $"{req.Scheme}://{req.Host}/media/avatar/{key}";
+            var avatarUrl = $"{PublicUrl.Base(config, req)}/media/avatar/{key}";
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
