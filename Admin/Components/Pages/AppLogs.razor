@@ -1,0 +1,196 @@
+@page "/app-logs"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPageBase
+@using Admin.Data
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AdminDb Db
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>시스템 로그</PageTitle>
+
+<div class="page-header">
+    <h1>시스템 로그</h1>
+    <p class="subtitle">Glitter Api(.NET)에서 발생한 로그입니다. DB에 저장할 최소 레벨은 아래에서 설정합니다(변경 후 ~15초 내 반영).</p>
+</div>
+
+@if (Error is not null)
+{
+    <div class="alert alert-danger py-2">@Error</div>
+}
+
+@if (!Db.Configured)
+{
+    <div class="alert alert-warning">DATABASE 설정이 없습니다.</div>
+}
+else
+{
+    <div class="card mb-3">
+        <div class="card-body d-flex flex-wrap align-items-center gap-2 py-2">
+            <span class="text-muted small">DB 저장 최소 레벨</span>
+            <select class="form-select form-select-sm" style="width:auto" @bind="minLevel">
+                @foreach (var lv in Levels)
+                {
+                    <option value="@lv">@lv</option>
+                }
+            </select>
+            <button class="btn btn-sm btn-primary" @onclick="SaveMinLevel" disabled="@Busy">저장</button>
+            @if (savedMsg is not null)
+            {
+                <span class="small text-success">@savedMsg</span>
+            }
+            <span class="text-muted small ms-auto">이 레벨 미만은 DB에 기록되지 않습니다.</span>
+        </div>
+    </div>
+
+    <div class="mb-3 d-flex flex-wrap align-items-center gap-1">
+        <select class="form-select form-select-sm" style="width:auto" @bind="fLevel" @bind:after="Load">
+            <option value="">전체 레벨</option>
+            @foreach (var lv in Levels)
+            {
+                <option value="@lv">@lv</option>
+            }
+        </select>
+        <input class="form-control form-control-sm" style="width:220px" placeholder="메시지·카테고리 검색" @bind="fSearch" @bind:event="oninput" @onkeyup="OnKey" />
+        <select class="form-select form-select-sm" style="width:auto" @bind="fPeriod" @bind:after="Load">
+            <option value="1">최근 1일</option>
+            <option value="7">최근 7일</option>
+            <option value="30">최근 30일</option>
+            <option value="">전체 기간</option>
+        </select>
+        <button class="btn btn-sm btn-primary" @onclick="Load" disabled="@Busy">검색</button>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="Load" disabled="@Busy">새로고침</button>
+    </div>
+
+    @if (logs is null)
+    {
+        <p class="text-muted">불러오는 중…</p>
+    }
+    else if (logs.Count == 0)
+    {
+        <div class="card"><div class="card-body text-center text-muted py-5">로그가 없습니다.</div></div>
+    }
+    else
+    {
+        <div class="card">
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:9rem">시각</th><th style="width:6rem">레벨</th><th>메시지</th></tr></thead>
+            <tbody>
+                @foreach (var (l, i) in logs.Select((x, i) => (x, i)))
+                {
+                    <tr style="cursor:pointer" @onclick="() => Toggle(i)">
+                        <td class="small text-nowrap">@l.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                        <td><span class="badge @BadgeClass(l.Level)">@l.Level</span></td>
+                        <td class="small">
+                            <div class="text-truncate" style="max-width:52rem">@l.Message</div>
+                            @if (!string.IsNullOrEmpty(l.Category))
+                            {
+                                <div class="text-muted" style="font-size:.72rem">@l.Category</div>
+                            }
+                        </td>
+                    </tr>
+                    @if (openIdx == i && l.Exception is not null)
+                    {
+                        <tr class="table-active">
+                            <td colspan="3"><pre class="small mb-0" style="white-space:pre-wrap">@l.Exception</pre></td>
+                        </tr>
+                    }
+                    else if (openIdx == i)
+                    {
+                        <tr class="table-active">
+                            <td colspan="3"><div class="small mb-0" style="white-space:pre-wrap">@l.Message</div></td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+        </div>
+
+        @if (hasMore)
+        {
+            <div class="text-center mt-3">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+            </div>
+        }
+    }
+}
+
+@code {
+    private static readonly string[] Levels = ["Trace", "Debug", "Information", "Warning", "Error", "Critical"];
+    private const int PageSize = 50;
+
+    private List<AppLogRow>? logs;
+    private string fLevel = "";
+    private string fSearch = "";
+    private string fPeriod = "7";
+    private int offset;
+    private bool hasMore;
+    private int? openIdx;
+
+    private string minLevel = "Warning";
+    private string? savedMsg;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync(async () => minLevel = await Db.GetLogMinLevelAsync());
+        await Load();
+    }
+
+    private DateTimeOffset? Since() => fPeriod switch
+    {
+        "1" => DateTimeOffset.UtcNow.AddDays(-1),
+        "7" => DateTimeOffset.UtcNow.AddDays(-7),
+        "30" => DateTimeOffset.UtcNow.AddDays(-30),
+        _ => null,
+    };
+
+    private async Task Load()
+    {
+        logs = null;
+        offset = 0;
+        openIdx = null;
+        await LoadAsync(async () =>
+        {
+            var page = await Db.ListAppLogsAsync(fLevel, fSearch, Since(), 0, PageSize);
+            logs = page;
+            offset = page.Count;
+            hasMore = page.Count == PageSize;
+        });
+    }
+
+    private Task LoadMore() => RunAsync(async () =>
+    {
+        var page = await Db.ListAppLogsAsync(fLevel, fSearch, Since(), offset, PageSize);
+        logs!.AddRange(page);
+        offset += page.Count;
+        hasMore = page.Count == PageSize;
+    });
+
+    private Task SaveMinLevel() => RunAsync(async () =>
+    {
+        await Db.SetLogMinLevelAsync(minLevel, await CurrentActor());
+        savedMsg = $"저장됨 ({minLevel}) — Api에 곧 반영됩니다.";
+    });
+
+    private void Toggle(int i) => openIdx = openIdx == i ? null : i;
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Load();
+    }
+
+    private static string BadgeClass(string level) => level switch
+    {
+        "Critical" or "Error" => "bg-danger",
+        "Warning" => "bg-warning text-dark",
+        "Information" => "bg-info text-dark",
+        _ => "bg-secondary",
+    };
+
+    private async Task<Actor> CurrentActor()
+    {
+        var user = (await AuthState.GetAuthenticationStateAsync()).User;
+        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(uid, user.Identity?.Name ?? "?");
+    }
+}
