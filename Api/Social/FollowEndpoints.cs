@@ -90,13 +90,13 @@ public static class FollowEndpoints
                   select u.username, u.avatar_url,
                          exists(select 1 from public.follows f2 where f2.follower_id = @viewer and f2.following_id = u.id)
                   from public.follows f join public.users u on u.id = f.follower_id
-                  where f.following_id = @uid order by f.created_at desc
+                  where f.following_id = @uid order by f.created_at desc limit 500
                   """
                 : """
                   select u.username, u.avatar_url,
                          exists(select 1 from public.follows f2 where f2.follower_id = @viewer and f2.following_id = u.id)
                   from public.follows f join public.users u on u.id = f.following_id
-                  where f.follower_id = @uid order by f.created_at desc
+                  where f.follower_id = @uid order by f.created_at desc limit 500
                   """;
             await using var cmd = new NpgsqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("uid", uid);

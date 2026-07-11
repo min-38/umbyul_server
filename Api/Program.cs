@@ -159,6 +159,11 @@ builder.Services.AddRateLimiter(options =>
         RateLimitPartition.GetFixedWindowLimiter(
             ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
             _ => new FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    // /me/export(GET, 규정 대응)는 호출당 다수 쿼리 → 유저당 시간제한(전역 GET 면제 밖에 별도로). (NON-258)
+    options.AddPolicy("export", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.User.FindFirstValue("sub") ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromHours(1), QueueLimit = 0 }));
     options.OnRejected = async (ctx, ct) =>
     {
         ctx.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;

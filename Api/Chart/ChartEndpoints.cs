@@ -27,11 +27,7 @@ public static class ChartEndpoints
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
 
-            // 차트는 비개인화(전 유저 동일 응답) — 파라미터 조합 키로 2분 캐시(QA6-10). 성공 응답만 캐시.
-            var cacheKey = $"chart:{type}:{sort}:{period}:{gender}:{age}:{offset}:{limit}";
-            if (cache.TryGetValue(cacheKey, out IResult? cachedResult) && cachedResult is not null) return cachedResult;
-
-            var off = Math.Max(offset ?? 0, 0);
+            var off = Math.Clamp(offset ?? 0, 0, 1000); // 깊은 offset 은 full aggregate·캐시키 폭증 유발 → 상한(NON-258)
             var lim = Math.Clamp(limit ?? 50, 1, 200); // 페이지 크기(더 보기로 증가)
             var isArtist = type == "artist"; // 앨범/곡 평가를 아티스트별로 집계
             var t = type is "album" or "track" ? type : null; // all => 타입 무관
@@ -47,6 +43,15 @@ public static class ChartEndpoints
             var artistFilters = $"{interval} {genderClause} {ageClause} and r.target_artists is not null";
             // 인구통계 필터(성별·나이) 활성 시 재식별 방지 위해 노출 임계 상향(LEG-10, k-익명성).
             var minv = MinVFor(gender, age);
+
+            // 차트는 비개인화(전 유저 동일 응답) — 캐시(QA6-10). 키는 정규화된 토큰만으로 구성해 junk 파라미터로
+            // 캐시키가 무한 증식(메모리 팽창)하지 않게 함(NON-258). 성공 응답만 캐시.
+            var kType = isArtist ? "artist" : t ?? "all";
+            var kSort = sort == "most" ? "most" : "wr";
+            var kPeriod = period is "day" or "week" or "month" ? period : "year";
+            var kAge = age is "10" or "20" or "30" or "40" or "50" ? age : "all";
+            var cacheKey = $"chart:{kType}:{kSort}:{kPeriod}:{g ?? "all"}:{kAge}:{off}:{lim}";
+            if (cache.TryGetValue(cacheKey, out IResult? cachedResult) && cachedResult is not null) return cachedResult;
 
             try
             {

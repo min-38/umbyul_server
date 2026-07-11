@@ -57,6 +57,7 @@ public static class CommentEndpoints
                       and (c.deleted_at is null
                            or exists (select 1 from public.review_comments ch where ch.parent_id = c.id and ch.deleted_at is null))
                     order by c.created_at asc
+                    limit 500
                     """, conn);
                 cmd.Parameters.AddWithValue("rid", rid);
                 cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });

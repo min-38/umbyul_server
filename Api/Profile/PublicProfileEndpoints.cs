@@ -35,7 +35,8 @@ public static class PublicProfileEndpoints
             var off = Math.Max(offset ?? 0, 0);
             // limit 미지정 시 전체(현 web은 클라 사이드 정렬이라 전체 필요) — 핵심 부하였던 평가당 Spotify 콜은
             // denormalized 우선 렌더로 제거됨(QA6-8). limit 지정 클라이언트는 opt-in 페이지네이션 가능.
-            var lim = limit is int l ? Math.Clamp(l, 1, 50) : int.MaxValue;
+            // 다만 미인증 GET 이 무제한 반환하지 않게 안전 상한 1000(정상 프로필은 거의 안 걸림, 남용만 차단 — NON-258).
+            var lim = limit is int l ? Math.Clamp(l, 1, 50) : 1000;
 
             await using var conn = new NpgsqlConnection(dbConnString);
             try { await conn.OpenAsync(ct); }

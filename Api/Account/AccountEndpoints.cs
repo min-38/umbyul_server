@@ -422,7 +422,7 @@ public static class AccountEndpoints
                     genrePreferences, genreVotes, consents, reviewReactions, mixLikes, commentLikes));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
-        });
+        }).RequireRateLimiting("export"); // 호출당 다수 쿼리 → 유저당 시간제한(NON-258)
 
         // 아바타 서빙 (공개) — R2 프록시
         app.MapGet("/media/avatar/{**key}", async (string key, R2Storage storage, CancellationToken ct) =>
