@@ -38,29 +38,15 @@ public static class ChartEndpoints
             var typeClause = t is null ? "" : "and r.target_type = @type";
             // 계산 정렬의 페이지 간 안정성 위해 tie-breaker(target_spotify_id) 포함.
             var orderBy = (sort == "most" ? "v desc, wr desc" : "wr desc, v desc") + ", b.target_spotify_id";
-            var interval = period switch
-            {
-                "day" => "and r.created_at > now() - interval '1 day'",
-                "week" => "and r.created_at > now() - interval '7 days'",
-                "month" => "and r.created_at > now() - interval '30 days'",
-                _ => "and r.created_at > now() - interval '365 days'", // year(기본)
-            };
+            var interval = IntervalFor(period);
             var g = gender is "male" or "female" ? gender : null;
             var genderClause = g is null ? "" : "and exists (select 1 from public.users u where u.id = r.user_id and u.gender = @gender)";
-            var ageClause = age switch
-            {
-                "10" => AgeExists("between 10 and 19"),
-                "20" => AgeExists("between 20 and 29"),
-                "30" => AgeExists("between 30 and 39"),
-                "40" => AgeExists("between 40 and 49"),
-                "50" => AgeExists(">= 50"),
-                _ => "",
-            };
+            var ageClause = AgeClauseFor(age);
             var filters = $"{typeClause} {interval} {genderClause} {ageClause}";
             // 아티스트: 타입 무관, target_artists 있는 것만. 나머지 필터는 동일.
             var artistFilters = $"{interval} {genderClause} {ageClause} and r.target_artists is not null";
-            // 인구통계 필터(성별·나이) 활성 시 재식별 방지 위해 노출 임계 상향(LEG-10).
-            var minv = g is not null || ageClause.Length > 0 ? MinDemographicV : MinV;
+            // 인구통계 필터(성별·나이) 활성 시 재식별 방지 위해 노출 임계 상향(LEG-10, k-익명성).
+            var minv = MinVFor(gender, age);
 
             try
             {
@@ -207,6 +193,30 @@ public static class ChartEndpoints
     // 평가자 나이대 EXISTS(생년월일 기준 완료 나이). cond 는 검증된 리터럴만.
     private static string AgeExists(string cond) =>
         $"and exists (select 1 from public.users u where u.id = r.user_id and u.birth_date is not null and date_part('year', age(u.birth_date)) {cond})";
+
+    // 기간 → SQL interval 절(닫힌 화이트리스트, 인젝션 가드 — QA7-4). 기본 year.
+    public static string IntervalFor(string? period) => period switch
+    {
+        "day" => "and r.created_at > now() - interval '1 day'",
+        "week" => "and r.created_at > now() - interval '7 days'",
+        "month" => "and r.created_at > now() - interval '30 days'",
+        _ => "and r.created_at > now() - interval '365 days'", // year(기본)
+    };
+
+    // 연령대 → EXISTS 절(닫힌 화이트리스트). 미지정/무효 → "".
+    public static string AgeClauseFor(string? age) => age switch
+    {
+        "10" => AgeExists("between 10 and 19"),
+        "20" => AgeExists("between 20 and 29"),
+        "30" => AgeExists("between 30 and 39"),
+        "40" => AgeExists("between 40 and 49"),
+        "50" => AgeExists(">= 50"),
+        _ => "",
+    };
+
+    // 노출 최소 평가 수 — 인구통계 필터(성별·나이) 활성 시 재식별 방지로 상향(k-익명성, LEG-10/QA7-4).
+    public static int MinVFor(string? gender, string? age) =>
+        gender is "male" or "female" || age is "10" or "20" or "30" or "40" or "50" ? MinDemographicV : MinV;
 
     // 아티스트 차트(NON-87): 앨범/곡 평가를 target_artists 로 펼쳐 아티스트별 집계. 커버 없음.
     private static async Task<IResult> LoadArtistChartAsync(

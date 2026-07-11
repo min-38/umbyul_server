@@ -132,7 +132,12 @@ public static class ArtistEndpoints
             all.AddRange(items);
             offset += items.Count;
         }
-        // 같은 이름의 지역/버전 중복 제거(대소문자 무시), 발매일 내림차순.
+        return DedupeAlbums(all);
+    }
+
+    // 같은 이름의 지역/버전 중복 제거(대소문자 무시, 첫 항목 유지) + 발매일 문자열 내림차순(QA7-4).
+    public static List<ArtistAlbum> DedupeAlbums(List<ArtistAlbum> all)
+    {
         var seen = new HashSet<string>();
         var deduped = new List<ArtistAlbum>();
         foreach (var a in all)
