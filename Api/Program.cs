@@ -58,21 +58,26 @@ if (!string.IsNullOrEmpty(db["HOST"]) && !string.IsNullOrEmpty(db["PASSWORD"]))
     }.ConnectionString;
 }
 
+// JWKS ConfigurationManager를 밖에서 생성 — 기동 시 pre-warm하고(NON-221), 무한 행 방지용 짧은 타임아웃
+// HttpClient를 HttpDocumentRetriever에 주입. 미설정이면 null(서명키 없음 = 토큰 검증 401, 앱은 정상 기동).
+ConfigurationManager<OpenIdConnectConfiguration>? jwksConfig = null;
+if (!string.IsNullOrEmpty(jwksUrl))
+{
+    var jwksHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+    jwksConfig = new ConfigurationManager<OpenIdConnectConfiguration>(
+        jwksUrl,
+        new JwksConfigurationRetriever(),
+        new HttpDocumentRetriever(jwksHttp) { RequireHttps = true });
+}
+
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         // 클레임 이름을 원본(sub/email) 그대로 사용 — .NET 기본 URI 매핑 비활성화.
         options.MapInboundClaims = false;
-        // JWKS 미설정 시 ConfigurationManager 생성이 throw → 모든 요청이 죽으므로 가드.
-        // (미설정이면 서명키가 없어 토큰 검증 실패 = 401, 앱은 정상 기동)
-        if (!string.IsNullOrEmpty(jwksUrl))
-        {
-            options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
-                jwksUrl,
-                new JwksConfigurationRetriever(),
-                new HttpDocumentRetriever { RequireHttps = true });
-        }
+        if (jwksConfig is not null)
+            options.ConfigurationManager = jwksConfig;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -95,6 +100,8 @@ builder.Services.AddCors(o => o.AddPolicy("web", p =>
 
 // Spotify 카탈로그 클라이언트 (토큰 캐시 공유 위해 싱글톤)
 builder.Services.AddHttpClient();
+// Spotify 전용 named client — 기본 100s 타임아웃에 single-flight/대기자 전원이 동반 행하지 않게 10s로 제한(NON-221).
+builder.Services.AddHttpClient("spotify", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddMemoryCache();
 // Spotify 응답 캐시 (Postgres) — 재시작·다중 인스턴스에도 유지, 429 완화 (NON-44)
 builder.Services.AddSingleton<ISpotifyResponseCache>(
@@ -150,6 +157,14 @@ builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>
 });
 
 var app = builder.Build();
+
+// JWKS pre-warm(NON-221): 기동 시 best-effort로 서명키를 미리 로드 → Supabase Auth가 재기동 순간 죽어 있어도
+// last-known-good가 채워져 첫 요청부터 전원 401 나는 것 방지. 실패해도 앱 기동은 막지 않음(런타임에 재시도).
+if (jwksConfig is not null)
+{
+    try { await jwksConfig.GetConfigurationAsync(CancellationToken.None); }
+    catch { /* Auth 다운·타임아웃 등 — 런타임 검증 시 재시도 */ }
+}
 
 // 미처리 예외 백스톱(NON-220): 프로덕션 미처리 예외가 빈 body 500이 되지 않게 {code,data} envelope로 응답
 // — 모든 클라의 res.json() 계약 보존(QA8-1~5로 못 막은 잔여 예외의 값싼 보험).

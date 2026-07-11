@@ -125,7 +125,7 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
             throw new HttpRequestException($"Spotify rate-limited (circuit open until {new DateTimeOffset(blockedUntilTicks, TimeSpan.Zero):O})");
 
         var token = await GetTokenAsync(CancellationToken.None);
-        using var http = factory.CreateClient();
+        using var http = factory.CreateClient("spotify"); // 10s 타임아웃(NON-221)
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var res = await http.SendAsync(req, CancellationToken.None);
@@ -156,13 +156,21 @@ public sealed class SpotifyClient(IHttpClientFactory factory, IConfiguration con
         {
             if (_token is not null && DateTimeOffset.UtcNow < _expiresAt) return _token;
             var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_clientId}:{_clientSecret}"));
-            using var http = factory.CreateClient();
+            using var http = factory.CreateClient("spotify"); // 10s 타임아웃(NON-221)
             using var req = new HttpRequestMessage(HttpMethod.Post, "https://accounts.spotify.com/api/token");
             req.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
             req.Content = new FormUrlEncodedContent(
                 new Dictionary<string, string> { ["grant_type"] = "client_credentials" });
             using var res = await http.SendAsync(req, ct);
-            res.EnsureSuccessStatusCode();
+            if (!res.IsSuccessStatusCode)
+            {
+                // 토큰 엔드포인트 실패(429/5xx)도 서킷을 열어, 캐시 토큰 만료 후 캐시 미스마다 토큰 POST를
+                // 백오프 0으로 연타(재시도 폭풍)하는 것을 막는다 — 데이터 429 경로와 동일 패턴(NON-221).
+                var backoff = CapBackoff(res.Headers.RetryAfter?.Delta);
+                Volatile.Write(ref _blockedUntilTicks, DateTimeOffset.UtcNow.Add(backoff).UtcTicks);
+                throw new HttpRequestException(
+                    $"Spotify token endpoint {(int)res.StatusCode} — backing off {backoff.TotalSeconds:F0}s");
+            }
             await using var stream = await res.Content.ReadAsStreamAsync(ct);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
             var root = doc.RootElement;
