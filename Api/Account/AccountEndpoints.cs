@@ -72,7 +72,12 @@ public static class AccountEndpoints
                         await storage.DeleteAsync(oldKey, ct);
                 }
             }
-            catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
+            catch (NpgsqlException)
+            {
+                // DB 갱신 실패 시 방금 올린 객체가 참조 없이 영구 잔존하지 않게 best-effort 정리(NON-219).
+                await storage.DeleteAsync(key, ct);
+                return ApiResults.ServiceUnavailable("DB_UNAVAILABLE");
+            }
 
             return ApiResults.Ok("OK", new { avatarUrl });
         }).DisableAntiforgery();

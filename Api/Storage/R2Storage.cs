@@ -28,6 +28,9 @@ public sealed class R2Storage
                 // R2는 AWS SDK v4 기본 무결성 체크섬을 일부 거부 → 필요 시에만 계산.
                 RequestChecksumCalculation = Amazon.Runtime.RequestChecksumCalculation.WHEN_REQUIRED,
                 ResponseChecksumValidation = Amazon.Runtime.ResponseChecksumValidation.WHEN_REQUIRED,
+                // R2 플랩 중 SDK 기본 100s+재시도로 요청이 분 단위 점유되는 것 방지(NON-219).
+                Timeout = TimeSpan.FromSeconds(10),
+                MaxErrorRetry = 1,
             });
         }
     }
@@ -51,8 +54,9 @@ public sealed class R2Storage
     public async Task DeleteAsync(string key, CancellationToken ct)
     {
         if (_s3 is null) return;
+        // best-effort: 스토리지 오류(네트워크/타임아웃 포함)가 주 동작(아바타 교체)을 절대 막지 않는다(NON-219).
         try { await _s3.DeleteObjectAsync(_bucket, key, ct); }
-        catch (AmazonS3Exception) { /* 이미 없음 등 무시 */ }
+        catch (Exception) { /* 이미 없음·네트워크 등 무시 */ }
     }
 
     /// 프리픽스 아래 전체 삭제(계정 탈퇴 시 avatars/{uid}/ 정리 — LEG-3). 페이지네이션 처리.
@@ -79,7 +83,8 @@ public sealed class R2Storage
                 token = list.IsTruncated == true ? list.NextContinuationToken : null;
             } while (token is not null);
         }
-        catch (AmazonS3Exception) { /* 스토리지 오류는 탈퇴를 막지 않음 */ }
+        // best-effort: 스토리지 오류(네트워크/타임아웃 포함)가 탈퇴 완료를 막지 않는다(NON-219).
+        catch (Exception) { /* 스토리지 오류는 탈퇴를 막지 않음 */ }
     }
 
     /// 객체 스트림 + content-type. 없으면 null.
@@ -91,6 +96,11 @@ public sealed class R2Storage
             return (res.ResponseStream, res.Headers.ContentType ?? "application/octet-stream");
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        // R2 장애/타임아웃도 빠른 404로 — 프록시가 100s 행·500 나지 않게(브라우저는 깨진 이미지 처리, NON-219).
+        catch (Exception)
         {
             return null;
         }
