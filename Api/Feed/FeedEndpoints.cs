@@ -61,8 +61,52 @@ public static class FeedEndpoints
                     ? "and exists (select 1 from public.genre_tags gt where gt.target_type = r.target_type and gt.target_spotify_id = r.target_spotify_id and gt.genre_id = any(@prefgenres))"
                     : "";
 
-                await using var cmd = new NpgsqlCommand(
-                    $"""
+                // 기본(hot)·rising 후보는 최근 30일로 바운드(ratings_created_active_idx 활용) — 전체 스캔 방지(QA6-7).
+                var recencyClause = sort is null or "hot" or "rising"
+                    ? "and r.created_at > now() - interval '30 days'"
+                    : "";
+
+                // 카운터 비정규화(QA6-7): likes/dislikes는 ratings 컬럼(::bigint 캐스트로 리더 계약 유지). recent(24h)만 바운드된 rx.
+                // my_reaction/comment_count는 정렬·limit 이후 최종 페이지 행에만 계산(rx 전면 집계·정렬 전 per-row 서브플랜 제거).
+                var newSql = $"""
+                    with rx_recent as (
+                      select rating_id, count(*) recent
+                      from public.review_reactions
+                      where created_at > now() - interval '24 hours'
+                      group by rating_id
+                    ),
+                    ranked as (
+                      select r.id, r.user_id, u.username, u.avatar_url, r.target_type, r.target_spotify_id,
+                             r.score, r.review, r.created_at, r.target_name, r.target_artist, r.target_image_url, r.target_artists, r.target_explicit,
+                             r.likes_count::bigint likes, r.dislikes_count::bigint dislikes, coalesce(rr.recent, 0) recent,
+                             (log(greatest(abs(r.likes_count - r.dislikes_count), 1))
+                               + sign(r.likes_count - r.dislikes_count) * extract(epoch from r.created_at) / 45000.0) hot,
+                             (case when r.likes_count + r.dislikes_count = 0 then 0 else
+                               ((r.likes_count::float / (r.likes_count + r.dislikes_count) + 1.9208 / (r.likes_count + r.dislikes_count))
+                                 - 1.96 * sqrt(((r.likes_count::float / (r.likes_count + r.dislikes_count)) * (1 - r.likes_count::float / (r.likes_count + r.dislikes_count)) + 0.9604 / (r.likes_count + r.dislikes_count)) / (r.likes_count + r.dislikes_count)))
+                               / (1 + 3.8416 / (r.likes_count + r.dislikes_count))
+                             end) wilson
+                      from public.ratings r
+                      join public.users u on u.id = r.user_id
+                      left join rx_recent rr on rr.rating_id = r.id
+                      where r.review is not null and length(trim(r.review)) > 0 and r.target_spotify_id is not null and r.deleted_at is null {scopeClause} {genreClause} {recencyClause}
+                        and not exists (select 1 from public.feed_dismissals d where d.user_id = @me and d.rating_id = r.id)
+                        and not exists (select 1 from public.blocks b where (b.blocker_id = @me and b.blocked_id = r.user_id) or (b.blocker_id = r.user_id and b.blocked_id = @me))
+                      order by {orderBy}
+                      limit @lim offset @off
+                    )
+                    select ranked.id, ranked.user_id, ranked.username, ranked.avatar_url, ranked.target_type, ranked.target_spotify_id,
+                           ranked.score, ranked.review, ranked.created_at, ranked.target_name, ranked.target_artist, ranked.target_image_url, ranked.target_artists,
+                           ranked.likes, ranked.dislikes,
+                           (select re.value from public.review_reactions re where re.rating_id = ranked.id and re.user_id = @me limit 1) my_reaction,
+                           (select count(*) from public.review_comments c where c.rating_id = ranked.id and c.deleted_at is null) comment_count,
+                           ranked.target_explicit
+                    from ranked
+                    order by {orderBy}
+                    """;
+
+                // 폴백: likes_count 컬럼 미적용(42703) 시 기존 rx 전면 집계 쿼리로 degrade(graceful).
+                var oldSql = $"""
                     with rx as (
                       select rating_id,
                              count(*) filter (where value = 'like') likes,
@@ -86,29 +130,24 @@ public static class FeedEndpoints
                     )
                     select id, user_id, username, avatar_url, target_type, target_spotify_id,
                            score, review, created_at, target_name, target_artist, target_image_url, target_artists,
-                           likes, dislikes, my_reaction, comment_count, target_explicit,
-                           (log(greatest(abs(likes - dislikes), 1))
-                             + sign(likes - dislikes) * extract(epoch from created_at) / 45000.0) hot,
-                           (case when likes + dislikes = 0 then 0 else
-                             ((likes::float / (likes + dislikes) + 1.9208 / (likes + dislikes))
-                               - 1.96 * sqrt(((likes::float / (likes + dislikes)) * (1 - likes::float / (likes + dislikes)) + 0.9604 / (likes + dislikes)) / (likes + dislikes)))
-                             / (1 + 3.8416 / (likes + dislikes))
-                           end) wilson
+                           likes, dislikes, my_reaction, comment_count, target_explicit
                     from f
                     order by {orderBy}
                     limit @lim offset @off
-                    """, conn);
-                cmd.Parameters.AddWithValue("lim", lim);
-                cmd.Parameters.AddWithValue("off", off);
-                // @me 는 scopeClause · my_reaction · dismissal 필터에서 항상 참조 → 비로그인은 NULL 로 바인딩.
-                cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
-                if (prefGenres.Length > 0) cmd.Parameters.AddWithValue("prefgenres", prefGenres);
+                    """;
 
-                var list = new List<FeedItem>();
-                await using (var rd = await cmd.ExecuteReaderAsync(ct))
+                async Task<List<FeedItem>> RunFeedAsync(string sql)
                 {
+                    await using var cmd = new NpgsqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("lim", lim);
+                    cmd.Parameters.AddWithValue("off", off);
+                    // @me 는 scopeClause · my_reaction · dismissal 필터에서 항상 참조 → 비로그인은 NULL 로 바인딩.
+                    cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
+                    if (prefGenres.Length > 0) cmd.Parameters.AddWithValue("prefgenres", prefGenres);
+                    var result = new List<FeedItem>();
+                    await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct))
-                        list.Add(new FeedItem(
+                        result.Add(new FeedItem(
                             rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
                             rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4), rd.GetString(5),
                             rd.GetDecimal(6), rd.GetString(7), rd.GetFieldValue<DateTimeOffset>(8),
@@ -118,7 +157,12 @@ public static class FeedEndpoints
                             (int)rd.GetInt64(13), (int)rd.GetInt64(14),
                             rd.IsDBNull(15) ? null : rd.GetString(15),
                             (int)rd.GetInt64(16), rd.GetBoolean(17), Array.Empty<string>()));
+                    return result;
                 }
+
+                List<FeedItem> list;
+                try { list = await RunFeedAsync(newSql); }
+                catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn) { list = await RunFeedAsync(oldSql); }
 
                 // 대상별 상위 장르 칩(NON-88/122). 크라우드 태깅 상위 2개(투표순). 리더 닫은 뒤 배치 조회.
                 var genreMap = await LoadFeedGenresAsync(conn, list.Select(x => x.TargetSpotifyId).Distinct().ToArray(), ct);
