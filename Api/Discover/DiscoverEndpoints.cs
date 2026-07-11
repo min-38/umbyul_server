@@ -366,7 +366,7 @@ public static class DiscoverEndpoints
         return await ReadItemsAsync(cmd, ct);
     }
 
-    // 오늘의 음악(NON-154): pick_date <= 오늘 중 최신 픽 1건 → target을 Spotify 상세(캐시)로 해석해 커버 메타 구성.
+    // 오늘의 음악(NON-154): 오늘(KST) 픽 1건 → target을 Spotify 상세(캐시)로 해석해 커버 메타 구성.
     // daily_picks 미존재(0061 전)·Spotify 미설정·조회 실패·잘못된 id 는 전부 null 로 degrade(섹션만 숨김).
     private static async Task<DailyPickItem?> LoadDailyPickAsync(NpgsqlConnection conn, SpotifyClient spotify, CancellationToken ct)
     {
@@ -409,14 +409,15 @@ public static class DiscoverEndpoints
             average, count, genres, spotifyUrl, isrc, upc, youtubeUrl);
     }
 
-    // 활성 픽(pick_date <= 오늘 중 최신) 1건 읽기. daily_picks(0061) 없으면 null.
+    // 오늘(KST) 픽 1건만 읽기(NON-263). 오늘 픽이 없으면 null → 만료된 어제 픽을 폴백 노출하지 않는다.
+    // daily_picks(0061) 없으면 null.
     private static async Task<(string Type, string SpotifyId, string? Note)?> ReadActivePickAsync(
         NpgsqlConnection conn, CancellationToken ct)
     {
         try
         {
             await using var cmd = new NpgsqlCommand(
-                "select target_type, target_spotify_id, note from public.daily_picks where pick_date <= current_date order by pick_date desc limit 1", conn);
+                "select target_type, target_spotify_id, note from public.daily_picks where pick_date = (timezone('Asia/Seoul', now()))::date limit 1", conn);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             if (!await r.ReadAsync(ct)) return null;
             return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2));
