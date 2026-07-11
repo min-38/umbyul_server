@@ -101,18 +101,18 @@ public static class AnnouncementEndpoints
                             r.IsDBNull(2) ? null : r.GetFieldValue<DateTimeOffset>(2)));
                 }
 
-                // 조회 수 — best-effort(0066 미적용 시 컬럼 없음 → 0).
+                // 조회 수 — announcement_views count(*)가 단일 진실원천(QA6-6). best-effort(테이블 없으면 0).
                 var views = new Dictionary<string, int>();
                 if (rows.Count > 0)
                     try
                     {
                         await using var vc = new NpgsqlCommand(
-                            "select id, view_count from public.announcements where id = any(@ids)", conn);
+                            "select announcement_id, count(*) from public.announcement_views where announcement_id = any(@ids) group by announcement_id", conn);
                         vc.Parameters.AddWithValue("ids", rows.Select(x => Guid.Parse(x.Id)).ToArray());
                         await using var vr = await vc.ExecuteReaderAsync();
-                        while (await vr.ReadAsync()) views[vr.GetGuid(0).ToString()] = vr.GetInt32(1);
+                        while (await vr.ReadAsync()) views[vr.GetGuid(0).ToString()] = (int)vr.GetInt64(1);
                     }
-                    catch (PostgresException) { /* view_count 컬럼 없음 → 0 */ }
+                    catch (PostgresException) { /* announcement_views 없음 → 0 */ }
 
                 var items = rows.Select(x => new
                 {
@@ -159,11 +159,11 @@ public static class AnnouncementEndpoints
                 int viewCount = 0;
                 try
                 {
-                    await using var vc = new NpgsqlCommand("select view_count from public.announcements where id = @id", conn);
+                    await using var vc = new NpgsqlCommand("select count(*) from public.announcement_views where announcement_id = @id", conn);
                     vc.Parameters.AddWithValue("id", aid);
-                    viewCount = (await vc.ExecuteScalarAsync()) is int v ? v : 0;
+                    viewCount = (await vc.ExecuteScalarAsync()) is long v ? (int)v : 0;
                 }
-                catch (PostgresException) { /* 컬럼 없음 → 0 */ }
+                catch (PostgresException) { /* announcement_views 없음 → 0 */ }
 
                 return ApiResults.Ok("OK", new
                 {
@@ -194,27 +194,18 @@ public static class AnnouncementEndpoints
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
                 // 게시 공지에만 기록(where exists) — 미게시 조회가 view 행을 선점 → 게시 후 첫 조회 미집계 방지(QA4-6).
-                int firstView;
-                await using (var v = new NpgsqlCommand(
+                // 조회수는 announcement_views count(*)가 단일 진실원천(QA6-6) — 여기선 insert만(별도 카운터 증가 없음).
+                await using var v = new NpgsqlCommand(
                     """
                     insert into public.announcement_views (announcement_id, viewer)
                     select @id, @v where exists (select 1 from public.announcements where id = @id and published)
                     on conflict do nothing
-                    """, conn))
-                {
-                    v.Parameters.AddWithValue("id", aid);
-                    v.Parameters.AddWithValue("v", viewer);
-                    firstView = await v.ExecuteNonQueryAsync();
-                }
-                if (firstView > 0)
-                {
-                    await using var inc = new NpgsqlCommand(
-                        "update public.announcements set view_count = view_count + 1 where id = @id and published", conn);
-                    inc.Parameters.AddWithValue("id", aid);
-                    await inc.ExecuteNonQueryAsync();
-                }
+                    """, conn);
+                v.Parameters.AddWithValue("id", aid);
+                v.Parameters.AddWithValue("v", viewer);
+                await v.ExecuteNonQueryAsync();
             }
-            catch (PostgresException) { /* announcement_views/view_count 없음 → skip */ }
+            catch (PostgresException) { /* announcement_views 없음 → skip */ }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
             return ApiResults.Ok("OK", new { });
         });
