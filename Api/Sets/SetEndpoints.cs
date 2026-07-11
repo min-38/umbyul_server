@@ -50,36 +50,48 @@ public static class SetEndpoints
             var me = Sub(user);
             var lim = Math.Clamp(limit ?? 30, 1, 50);
             var off = Math.Max(0, offset ?? 0);
-            var orderBy = sort == "popular" ? "like_count desc, s.created_at desc" : "s.created_at desc";
             // 소프트삭제(관리자 테이크다운, NON-141)된 믹스는 목록에서 제외.
             var search = string.IsNullOrWhiteSpace(q) ? "" : "and s.title ilike '%' || @q || '%'";
+            // 인기 정렬은 비정규화 sets.like_count 컬럼으로(서브쿼리 전체 정렬 제거, QA6-13). SELECT의 like_count 서브쿼리는
+            // 정렬에 안 쓰여 limit 후 30행에만 실행되므로 유지. 컬럼 미적용(42703) 시 서브쿼리 정렬로 폴백(graceful).
+            var newOrder = sort == "popular" ? "s.like_count desc, s.created_at desc" : "s.created_at desc";
+            var oldOrder = sort == "popular" ? "like_count desc, s.created_at desc" : "s.created_at desc";
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync();
-                await using var cmd = new NpgsqlCommand(
-                    $"""
-                    select s.id, s.owner_id, u.username, u.avatar_url, s.title, s.note, s.listen_url, s.created_at,
-                           (select count(*) from public.set_tracks t where t.set_id = s.id)::int, s.updated_at, (select array_agg(img) from (select image_url as img from public.set_tracks where set_id = s.id and image_url is not null order by position limit 2) x) as covers, (select count(*) from public.set_likes l where l.set_id = s.id)::int as like_count, (@me is not null and exists (select 1 from public.set_likes l where l.set_id = s.id and l.user_id = @me)) as liked
-                    from public.sets s
-                    join public.users u on u.id = s.owner_id
-                    where s.deleted_at is null
-                    {search}
-                    order by {orderBy}
-                    limit @lim offset @off
-                    """, conn);
-                cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
-                cmd.Parameters.AddWithValue("q", (object?)q ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("lim", lim);
-                cmd.Parameters.AddWithValue("off", off);
-                var items = new List<SetSummary>();
-                await using var rd = await cmd.ExecuteReaderAsync();
-                while (await rd.ReadAsync())
-                    items.Add(new SetSummary(
-                        rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
-                        rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4),
-                        rd.IsDBNull(5) ? null : rd.GetString(5), rd.IsDBNull(6) ? null : rd.GetString(6),
-                        rd.GetFieldValue<DateTimeOffset>(7), rd.GetInt32(8), rd.GetFieldValue<DateTimeOffset>(9), rd.IsDBNull(10) ? Array.Empty<string>() : rd.GetFieldValue<string[]>(10), rd.GetInt32(11), rd.GetBoolean(12)));
+
+                async Task<List<SetSummary>> RunAsync(string orderBy)
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        $"""
+                        select s.id, s.owner_id, u.username, u.avatar_url, s.title, s.note, s.listen_url, s.created_at,
+                               (select count(*) from public.set_tracks t where t.set_id = s.id)::int, s.updated_at, (select array_agg(img) from (select image_url as img from public.set_tracks where set_id = s.id and image_url is not null order by position limit 2) x) as covers, (select count(*) from public.set_likes l where l.set_id = s.id)::int as like_count, (@me is not null and exists (select 1 from public.set_likes l where l.set_id = s.id and l.user_id = @me)) as liked
+                        from public.sets s
+                        join public.users u on u.id = s.owner_id
+                        where s.deleted_at is null
+                        {search}
+                        order by {orderBy}
+                        limit @lim offset @off
+                        """, conn);
+                    cmd.Parameters.Add(new NpgsqlParameter("me", NpgsqlDbType.Uuid) { Value = (object?)me ?? DBNull.Value });
+                    cmd.Parameters.AddWithValue("q", (object?)q ?? DBNull.Value);
+                    cmd.Parameters.AddWithValue("lim", lim);
+                    cmd.Parameters.AddWithValue("off", off);
+                    var result = new List<SetSummary>();
+                    await using var rd = await cmd.ExecuteReaderAsync();
+                    while (await rd.ReadAsync())
+                        result.Add(new SetSummary(
+                            rd.GetGuid(0).ToString(), rd.GetGuid(1).ToString(), rd.GetString(2),
+                            rd.IsDBNull(3) ? null : rd.GetString(3), rd.GetString(4),
+                            rd.IsDBNull(5) ? null : rd.GetString(5), rd.IsDBNull(6) ? null : rd.GetString(6),
+                            rd.GetFieldValue<DateTimeOffset>(7), rd.GetInt32(8), rd.GetFieldValue<DateTimeOffset>(9), rd.IsDBNull(10) ? Array.Empty<string>() : rd.GetFieldValue<string[]>(10), rd.GetInt32(11), rd.GetBoolean(12)));
+                    return result;
+                }
+
+                List<SetSummary> items;
+                try { items = await RunAsync(newOrder); }
+                catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedColumn) { items = await RunAsync(oldOrder); }
                 return ApiResults.Ok("OK", new { items });
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
