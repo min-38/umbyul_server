@@ -35,7 +35,7 @@ public static class ReportEndpoints
                     """
                     insert into public.reports (reporter_id, target_type, target_id, reason, detail)
                     values (@uid, @tt, @tid, @reason, @detail)
-                    on conflict (reporter_id, target_type, target_id) do nothing
+                    on conflict do nothing
                     """, conn);
                 cmd.Parameters.AddWithValue("uid", uid);
                 cmd.Parameters.AddWithValue("tt", req.TargetType!);
