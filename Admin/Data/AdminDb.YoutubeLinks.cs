@@ -19,6 +19,39 @@ public sealed partial class AdminDb
         return list;
     }
 
+    // 리뷰가 달린 음악 목록(NON-266) — target_id 기준 그룹. YouTube 링크 부여 대상 발견용.
+    // target_id 는 리뷰 시 확정된 ISRC/UPC 라 링크 매칭이 정확. 링크 유무 표시. 리뷰 많은 순.
+    public async Task<List<ReviewedTargetRow>> ListReviewedTargetsAsync(CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            """
+            select r.target_type, r.target_id,
+                   max(r.target_spotify_id) as spotify_id,
+                   max(r.target_name) as name, max(r.target_artist) as artist,
+                   count(*)::int as reviews, yl.youtube_url
+            from public.ratings r
+            left join public.target_youtube_links yl
+              on yl.target_type = r.target_type and yl.target_id = r.target_id
+            where r.deleted_at is null
+            group by r.target_type, r.target_id, yl.youtube_url
+            order by count(*) desc, max(r.target_name)
+            limit 300
+            """, conn);
+        var list = new List<ReviewedTargetRow>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new ReviewedTargetRow(
+                r.GetString(0), r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.GetInt32(5),
+                r.IsDBNull(6) ? null : r.GetString(6)));
+        return list;
+    }
+
     // idInput: 신규는 spotify_id(운영자 입력), 편집은 이미 target_id. ratings로 해석해 target_id 키로 upsert.
     public async Task<(bool Ok, string? Error)> SaveYoutubeLinkAsync(string targetType, string idInput, string url, Actor actor, CancellationToken ct = default)
     {
@@ -88,3 +121,6 @@ public sealed partial class AdminDb
 }
 
 public sealed record YoutubeLinkAdminRow(string TargetType, string TargetId, string YoutubeUrl, DateTimeOffset UpdatedAt);
+
+public sealed record ReviewedTargetRow(
+    string TargetType, string TargetId, string? SpotifyId, string? Name, string? Artist, int Reviews, string? YoutubeUrl);

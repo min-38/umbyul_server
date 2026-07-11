@@ -59,6 +59,40 @@ else
         </table>
     </div>
 
+    <div class="card mb-4">
+        <div class="card-body py-2">
+            <span class="text-muted small">리뷰된 음악 @(reviewed.Count)개 — 링크를 넣을 대상 선택(리뷰된 곡이라 매칭 정확). 리뷰 많은 순.</span>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:5rem">종류</th><th>음악</th><th style="width:5rem">리뷰</th><th>YouTube</th><th style="width:5rem"></th></tr></thead>
+            <tbody>
+                @if (reviewed.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-center text-muted py-4">리뷰된 음악이 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var row in reviewed)
+                    {
+                        <tr style="cursor:pointer" @onclick="() => EditTarget(row)">
+                            <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
+                            <td class="text-truncate" style="max-width:20rem">
+                                <span class="fw-semibold">@(row.Name ?? row.TargetId)</span>
+                                @if (row.Artist is not null) { <span class="text-muted small"> · @row.Artist</span> }
+                            </td>
+                            <td class="text-muted small">@row.Reviews</td>
+                            <td class="small">
+                                @if (row.YoutubeUrl is not null) { <span class="badge bg-success">있음</span> }
+                                else { <span class="text-muted">—</span> }
+                            </td>
+                            <td class="text-end"><button class="btn btn-link btn-sm p-0" @onclick="() => EditTarget(row)" @onclick:stopPropagation>@(row.YoutubeUrl is null ? "링크 추가" : "편집")</button></td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
     @if (editing)
     {
         <div class="card">
@@ -98,6 +132,7 @@ else
 
 @code {
     private List<YoutubeLinkAdminRow> links = [];
+    private List<ReviewedTargetRow> reviewed = [];
     private bool editing;
     private bool isNew;
     private string targetType = "track";
@@ -110,7 +145,22 @@ else
 
     protected override async Task OnInitializedAsync() => await Load();
 
-    private async Task Load() => await LoadAsync(async () => links = await Db.ListYoutubeLinksAsync());
+    private async Task Load() => await LoadAsync(async () =>
+    {
+        links = await Db.ListYoutubeLinksAsync();
+        reviewed = await Db.ListReviewedTargetsAsync();
+    });
+
+    // 리뷰된 음악 행 클릭 → 편집기 프리필(NON-266). 링크 있으면 편집(target_id 키), 없으면 신규(spotify_id 해석).
+    private void EditTarget(ReviewedTargetRow row)
+    {
+        editing = true;
+        isNew = row.YoutubeUrl is null;
+        targetType = row.TargetType;
+        spotifyId = row.YoutubeUrl is null ? (row.SpotifyId ?? row.TargetId) : row.TargetId;
+        url = row.YoutubeUrl ?? "";
+        msg = null;
+    }
 
     private void NewItem()
     {
@@ -145,6 +195,7 @@ else
             err = false; msg = "저장됨";
             notice = null;
             links = await Db.ListYoutubeLinksAsync();
+            reviewed = await Db.ListReviewedTargetsAsync();
             editing = false;
         });
     }
