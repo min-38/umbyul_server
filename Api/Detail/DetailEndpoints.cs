@@ -124,6 +124,8 @@ public static class DetailEndpoints
         return map;
     }
 
+    private const int ReviewPageSize = 50; // 상세 리뷰 목록 페이지 크기(무제한 반환·per-row 서브플랜 방지, QA6-9)
+
     // 우리 DB의 평점/리뷰 + 평균 + 리뷰별 좋아요/싫어요 집계, me 의 반응(NON-23).
     private static async Task<(RatingSummary, IReadOnlyList<ReviewItem>)> LoadReviewsAsync(
         string? dbConnString, string targetType, string targetId, Guid? me, CancellationToken ct)
@@ -134,6 +136,22 @@ public static class DetailEndpoints
         {
             await using var conn = new NpgsqlConnection(dbConnString);
             await conn.OpenAsync(ct);
+
+            // 요약(평균·개수)은 리뷰 목록과 분리해 전체 평가 기준으로 집계(ratings_target_idx 커버) — 목록 바운드와 무관하게 정확(QA6-9).
+            RatingSummary summary = empty;
+            await using (var sc = new NpgsqlCommand(
+                "select count(*), round(avg(score), 2)::float8 from public.ratings where target_type = @tt and target_id = @tid and deleted_at is null", conn))
+            {
+                sc.Parameters.AddWithValue("tt", targetType);
+                sc.Parameters.AddWithValue("tid", targetId);
+                await using var sr = await sc.ExecuteReaderAsync(ct);
+                if (await sr.ReadAsync(ct))
+                {
+                    var cnt = (int)sr.GetInt64(0);
+                    if (cnt > 0) summary = new RatingSummary(sr.IsDBNull(1) ? null : sr.GetDouble(1), cnt);
+                }
+            }
+
             await using var cmd = new NpgsqlCommand(
                 """
                 select r.id, r.user_id, u.username, u.avatar_url, r.score, r.review, r.created_at,
@@ -147,32 +165,29 @@ public static class DetailEndpoints
                 where r.target_type = @tt and r.target_id = @tid and r.deleted_at is null
                 group by r.id, u.username, u.avatar_url
                 order by r.created_at desc
+                limit @lim
                 """, conn);
             cmd.Parameters.AddWithValue("tt", targetType);
             cmd.Parameters.AddWithValue("tid", targetId);
             cmd.Parameters.AddWithValue("me", (object?)me ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("lim", ReviewPageSize);
 
             var reviews = new List<ReviewItem>();
-            decimal sum = 0;
             await using (var r = await cmd.ExecuteReaderAsync(ct))
             {
                 while (await r.ReadAsync(ct))
-                {
-                    var score = r.GetDecimal(4);
-                    sum += score;
                     reviews.Add(new ReviewItem(
                         r.GetGuid(0).ToString(),
                         r.GetGuid(1).ToString(),
                         r.GetString(2),
                         r.IsDBNull(3) ? null : r.GetString(3),
-                        score,
+                        r.GetDecimal(4),
                         r.IsDBNull(5) ? null : r.GetString(5),
                         r.GetFieldValue<DateTimeOffset>(6),
                         (int)r.GetInt64(7),
                         (int)r.GetInt64(8),
                         r.IsDBNull(9) ? null : r.GetString(9),
                         (int)r.GetInt64(10)));
-                }
             }
 
             // 리뷰 작성자 레벨 뱃지(NON-163) — 배치 1회. 실패 시 기본 Lv 1.
@@ -181,9 +196,6 @@ public static class DetailEndpoints
                 for (int i = 0; i < reviews.Count; i++)
                     if (levels.TryGetValue(Guid.Parse(reviews[i].UserId), out var lv)) reviews[i] = reviews[i] with { Level = lv };
 
-            var summary = reviews.Count > 0
-                ? new RatingSummary(Math.Round((double)(sum / reviews.Count), 2), reviews.Count)
-                : empty;
             return (summary, reviews);
         }
         catch (NpgsqlException) { return (empty, []); }
