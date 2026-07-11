@@ -43,7 +43,7 @@
         using (Guard.Work())
             await Db.WarnUserAsync(UserId, R(), await CurrentActor(), ReportId);
         await Done("경고 부여됨");
-    });
+    }, confirm: "이 사용자에게 경고를 부여할까요? 사용자에게 알림이 전송됩니다.");
 
     private async Task Suspend()
     {

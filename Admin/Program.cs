@@ -159,6 +159,10 @@ app.MapPost("/auth/refresh", async (HttpContext ctx, AdminDb db) =>
 // GET+POST 모두 허용: 버튼은 form POST, 세션 만료 자동 로그아웃은 full navigation(GET)이라(NON-67).
 app.MapMethods("/auth/logout", ["GET", "POST"], async (HttpContext ctx, AdminDb db) =>
 {
+    // GET 은 세션 만료 자동 로그아웃 전용(NON-67) — 유효 세션에 대한 cross-site GET 강제 로그아웃(CSRF) 방지 위해
+    // 실제 만료(session_exp 경과)일 때만 처리. 버튼(POST)은 항상 처리(NON-260).
+    if (HttpMethods.IsGet(ctx.Request.Method) && !SessionExpired(ctx.User))
+        return Results.Redirect("/");
     if (ctx.User.Identity?.IsAuthenticated == true)
     {
         Guid.TryParse(ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id);
@@ -174,6 +178,11 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+// 세션(app-level 고정 만료) 경과 여부 — GET 자동 로그아웃 게이트(NON-260). 클레임 없으면 만료 아님(강제 로그아웃 안 함).
+static bool SessionExpired(System.Security.Claims.ClaimsPrincipal user) =>
+    long.TryParse(user.FindFirst("session_exp")?.Value, out var unix)
+    && DateTimeOffset.FromUnixTimeSeconds(unix) <= DateTimeOffset.UtcNow;
 
 // 로그인 실패 로그의 IP 솔트 해시(QA9-2) — 원본 IP 미저장. null/빈 IP는 "unknown". 16 hex 결정적(같은 IP 상관관계 유지).
 static string HashLoginIp(string? ip) =>

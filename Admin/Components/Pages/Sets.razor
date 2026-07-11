@@ -139,7 +139,7 @@ else
         await Db.SoftDeleteSetAsync(id, string.IsNullOrWhiteSpace(deleteReason) ? null : deleteReason.Trim(), await CurrentActor());
         deletingId = null;
         await Load();
-    });
+    }, confirm: "이 믹스를 삭제할까요? 공개에서 즉시 숨겨집니다.");
 
     private async Task<Actor> CurrentActor()
     {
