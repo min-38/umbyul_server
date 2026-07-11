@@ -24,13 +24,18 @@ public sealed record UserProfile(
 
 public static class PublicProfileEndpoints
 {
-    private record Row(string Id, string Tt, string? Sid, string? TargetId, decimal Score, string? Body, DateTimeOffset Created, int Likes, bool Deleted, bool Explicit);
+    private record Row(string Id, string Tt, string? Sid, string? TargetId, decimal Score, string? Body, DateTimeOffset Created, int Likes, bool Deleted, bool Explicit,
+        string? Name, string? Artist, string? Image, string? Artists);
 
     public static void MapPublicProfileEndpoints(this WebApplication app, string? dbConnString)
     {
-        app.MapGet("/users/{username}", async (string username, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
+        app.MapGet("/users/{username}", async (string username, int? offset, int? limit, SpotifyClient spotify, ClaimsPrincipal user, CancellationToken ct) =>
         {
             if (dbConnString is null) return ApiResults.ServiceUnavailable("DB_NOT_CONFIGURED");
+            var off = Math.Max(offset ?? 0, 0);
+            // limit 미지정 시 전체(현 web은 클라 사이드 정렬이라 전체 필요) — 핵심 부하였던 평가당 Spotify 콜은
+            // denormalized 우선 렌더로 제거됨(QA6-8). limit 지정 클라이언트는 opt-in 페이지네이션 가능.
+            var lim = limit is int l ? Math.Clamp(l, 1, 50) : int.MaxValue;
 
             await using var conn = new NpgsqlConnection(dbConnString);
             try { await conn.OpenAsync(ct); }
@@ -98,15 +103,19 @@ public static class PublicProfileEndpoints
                     """
                     select r.id, r.target_type, r.target_spotify_id, r.target_id, r.score, r.review, r.created_at,
                            count(re.id) filter (where re.value = 'like') as likes, (r.deleted_at is not null) as deleted,
-                           bool_or(r.target_explicit) as explicit
+                           bool_or(r.target_explicit) as explicit,
+                           r.target_name, r.target_artist, r.target_image_url, r.target_artists
                     from public.ratings r
                     left join public.review_reactions re on re.rating_id = r.id
                     where r.user_id = @uid and (r.deleted_at is null or @owner)
                     group by r.id
                     order by r.created_at desc
+                    limit @lim offset @off
                     """, conn);
                 rcmd.Parameters.AddWithValue("uid", uid);
                 rcmd.Parameters.AddWithValue("owner", isOwner);
+                rcmd.Parameters.AddWithValue("lim", lim);
+                rcmd.Parameters.AddWithValue("off", off);
                 await using var rr = await rcmd.ExecuteReaderAsync(ct);
                 while (await rr.ReadAsync(ct))
                     rows.Add(new Row(
@@ -114,32 +123,67 @@ public static class PublicProfileEndpoints
                         rr.IsDBNull(2) ? null : rr.GetString(2),
                         rr.IsDBNull(3) ? null : rr.GetString(3), rr.GetDecimal(4),
                         rr.IsDBNull(5) ? null : rr.GetString(5), rr.GetFieldValue<DateTimeOffset>(6),
-                        (int)rr.GetInt64(7), rr.GetBoolean(8), rr.GetBoolean(9)));
+                        (int)rr.GetInt64(7), rr.GetBoolean(8), rr.GetBoolean(9),
+                        rr.IsDBNull(10) ? null : rr.GetString(10),
+                        rr.IsDBNull(11) ? null : rr.GetString(11),
+                        rr.IsDBNull(12) ? null : rr.GetString(12),
+                        rr.IsDBNull(13) ? null : rr.GetString(13)));
             }
             catch (NpgsqlException)
             {
                 rows.Clear();
             }
 
-            // 통계·Spotify 해석은 살아있는 리뷰만 대상(삭제 묘비는 카운트·점수에서 제외).
-            var active = rows.Where(x => !x.Deleted).ToList();
-            var totalLikes = active.Sum(x => x.Likes);
+            // 통계(리뷰수·받은 좋아요)는 전체 활성 평가 기준 — 페이지네이션(위 limit)과 분리(QA6-8).
+            var (reviewCount, totalLikes) = await LoadReviewStatsAsync(conn, uid, ct);
             var (followers, following, isFollowing) = await LoadFollowStatsAsync(conn, uid, viewer, ct);
             // 리뷰어 레벨(NON-153): XP = 10*리뷰 + 1*받은따봉 + 15*'픽 당일' 리뷰. 새 테이블 없이 집계.
             var dailyPickReviews = await LoadDailyPickReviewsAsync(conn, uid, ct);
-            var (level, xp, xpInto, xpFor) = ReviewerLevel.Compute(active.Count, totalLikes, dailyPickReviews);
-            var display = await ResolveAsync(spotify, active, ct);
+            var (level, xp, xpInto, xpFor) = ReviewerLevel.Compute(reviewCount, totalLikes, dailyPickReviews);
+
+            // 표시: denormalized 컬럼(target_name 등) 우선 — 모던 행은 Spotify 콜 0(피드·발견 방식).
+            // 이름 없는 레거시(pre-0013) 활성 행만 Spotify 해석 → 평가당 1콜 폭주 제거(QA6-8).
+            var legacy = rows.Where(x => !x.Deleted && x.Name is null).ToList();
+            var display = await ResolveAsync(spotify, legacy, ct);
 
             var reviews = rows.Select(x =>
             {
+                if (x.Name is not null)
+                    return new ProfileReview(x.Id, x.Tt, x.Sid, x.Score, x.Body, x.Created, x.Likes, x.Name, x.Artist, x.Image, x.Deleted, x.Explicit,
+                        x.Artists is not null
+                            ? Api.Common.ArtistRef.Parse(x.Artists)?.Select(a => new Api.Detail.ArtistRef(a.Id ?? "", a.Name ?? "")).ToList()
+                            : null, null, null);
                 display.TryGetValue(x.Id, out var d);
                 return new ProfileReview(x.Id, x.Tt, d.SpotifyId ?? x.Sid, x.Score, x.Body, x.Created, x.Likes, d.Name, d.Artist, d.Image, x.Deleted, x.Explicit, d.Artists, d.AlbumId, d.AlbumName);
             }).ToList();
 
             return ApiResults.Ok("OK", new UserProfile(
-                uid.ToString(), uname, avatar, joined, active.Count, totalLikes, xp, level, xpInto, xpFor,
+                uid.ToString(), uname, avatar, joined, reviewCount, totalLikes, xp, level, xpInto, xpFor,
                 followers, following, isFollowing, reviews, false));
         });
+    }
+
+    // 전체 활성 리뷰 수 + 받은 좋아요 총합(페이지네이션과 무관한 통계). 실패 시 0/0.
+    private static async Task<(int Count, int TotalLikes)> LoadReviewStatsAsync(NpgsqlConnection conn, Guid uid, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                select count(*), coalesce(sum(likes), 0) from (
+                  select r.id, count(re.id) filter (where re.value = 'like') likes
+                  from public.ratings r
+                  left join public.review_reactions re on re.rating_id = r.id
+                  where r.user_id = @uid and r.deleted_at is null
+                  group by r.id
+                ) t
+                """, conn);
+            cmd.Parameters.AddWithValue("uid", uid);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            await r.ReadAsync(ct);
+            return ((int)r.GetInt64(0), (int)r.GetInt64(1));
+        }
+        catch (NpgsqlException) { return (0, 0); }
     }
 
     // '픽 당일' 리뷰 수(NON-153) — 리뷰 작성일이 그 대상의 daily_picks.pick_date 와 같은 것만.
