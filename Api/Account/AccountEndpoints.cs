@@ -227,22 +227,52 @@ public static class AccountEndpoints
                 catch (NpgsqlException) { } // 댓글 테이블 미존재/컬럼 상이 — 생략
 
                 // 내 믹스·차단 목록(LEG-4). 테이블 미존재(구스키마)면 생략.
+                // 믹스는 listen_url(유저 입력 URL)·트랙리스트(유저 큐레이션)까지 포함 — 데이터 이동권 완전성(QA9-3).
                 var sets = new List<ExportSet>();
                 var blocked = new List<string>();
                 try
                 {
+                    // 리더 열린 채로 per-set 트랙을 못 조회하므로 세트 행을 먼저 모은 뒤 트랙을 로드.
+                    var setRows = new List<(Guid Id, string Title, string? Note, string? ListenUrl, DateTimeOffset Created)>();
                     await using (var cmd = new NpgsqlCommand(
-                        "select title, note, created_at from public.sets where owner_id = @id and deleted_at is null order by created_at", conn))
+                        "select id, title, note, listen_url, created_at from public.sets where owner_id = @id and deleted_at is null order by created_at", conn))
                     {
                         cmd.Parameters.AddWithValue("id", uid);
                         await using var r = await cmd.ExecuteReaderAsync(ct);
                         while (await r.ReadAsync(ct))
-                            sets.Add(new ExportSet(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+                            setRows.Add((r.GetGuid(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2),
+                                r.IsDBNull(3) ? null : r.GetString(3), r.GetFieldValue<DateTimeOffset>(4)));
+                    }
+                    foreach (var s in setRows)
+                    {
+                        var tracks = new List<ExportSetTrack>();
+                        await using (var tc = new NpgsqlCommand(
+                            "select spotify_id, name, artist, position from public.set_tracks where set_id = @sid order by position", conn))
+                        {
+                            tc.Parameters.AddWithValue("sid", s.Id);
+                            await using var tr = await tc.ExecuteReaderAsync(ct);
+                            while (await tr.ReadAsync(ct))
+                                tracks.Add(new ExportSetTrack(tr.GetString(0), tr.GetString(1), tr.GetString(2), tr.GetInt32(3)));
+                        }
+                        sets.Add(new ExportSet(s.Title, s.Note, s.ListenUrl, s.Created, tracks));
                     }
                     blocked = await UsernamesAsync(conn,
                         "select u.username from public.blocks b join public.users u on u.id = b.blocked_id where b.blocker_id = @id order by u.username", uid, ct);
                 }
                 catch (NpgsqlException) { }
+
+                // 믹스 댓글 — 유저가 쓴 자유 텍스트(리뷰 댓글과 동일 부류, QA9-3).
+                var setComments = new List<ExportComment>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        "select body, created_at from public.set_comments where user_id = @id and deleted_at is null order by created_at", conn);
+                    cmd.Parameters.AddWithValue("id", uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        setComments.Add(new ExportComment(r.GetString(0), r.GetFieldValue<DateTimeOffset>(1)));
+                }
+                catch (NpgsqlException) { } // set_comments 미존재 등 — 생략
 
                 // 로그인 상태로 연 공지 열람 이력(u: 행) — Art.15/20 완전성(QA9-1). 익명 ip: 행은 본인 데이터 아님.
                 var announcementViews = new List<ExportAnnouncementView>();
@@ -265,7 +295,7 @@ public static class AccountEndpoints
                 catch (NpgsqlException) { } // announcement_views 미존재 등 — 생략
 
                 return ApiResults.Ok("OK", new ExportData(
-                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked, announcementViews));
+                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked, announcementViews, setComments));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -302,12 +332,14 @@ public sealed record ExportData(
     IReadOnlyList<ExportRating> Ratings, IReadOnlyList<string> Following,
     IReadOnlyList<string> Followers, IReadOnlyList<ExportComment> Comments,
     IReadOnlyList<ExportSet> Sets, IReadOnlyList<string> Blocked,
-    IReadOnlyList<ExportAnnouncementView> AnnouncementViews);
+    IReadOnlyList<ExportAnnouncementView> AnnouncementViews,
+    IReadOnlyList<ExportComment> SetComments);
 public sealed record ExportProfile(
     string Username, string? Email, string? Country, string? BirthDate, string? Gender, string? Locale, string? AvatarUrl, DateTimeOffset JoinedAt);
 public sealed record ExportRating(
     string TargetType, string? SpotifyId, string? Name, string? Artist,
     decimal Score, string? Review, DateTimeOffset CreatedAt);
 public sealed record ExportComment(string Body, DateTimeOffset CreatedAt);
-public sealed record ExportSet(string Title, string? Note, DateTimeOffset CreatedAt);
+public sealed record ExportSet(string Title, string? Note, string? ListenUrl, DateTimeOffset CreatedAt, IReadOnlyList<ExportSetTrack> Tracks);
+public sealed record ExportSetTrack(string SpotifyId, string Name, string Artist, int Position);
 public sealed record ExportAnnouncementView(string AnnouncementId, string? Title, DateTimeOffset ViewedAt);
