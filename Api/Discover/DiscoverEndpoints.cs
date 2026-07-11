@@ -374,7 +374,7 @@ public static class DiscoverEndpoints
 
         var pick = await ReadActivePickAsync(conn, ct);
         if (pick is null) return null;
-        var (type, spotifyId, note) = pick.Value;
+        var (type, spotifyId, note, expiresAt) = pick.Value;
 
         string? name, artist, image, spotifyUrl, isrc = null, upc = null;
         IReadOnlyList<ArtistRef> artists;
@@ -406,21 +406,22 @@ public static class DiscoverEndpoints
         var targetId = isrc ?? upc ?? spotifyId;
         var youtubeUrl = await TargetLinks.YoutubeAsync(conn, type, targetId, ct);
         return new DailyPickItem(type, spotifyId, name, artist, image, artists, explicitFlag, note,
-            average, count, genres, spotifyUrl, isrc, upc, youtubeUrl);
+            average, count, genres, spotifyUrl, isrc, upc, youtubeUrl, expiresAt);
     }
 
     // 오늘(KST) 픽 1건만 읽기(NON-263). 오늘 픽이 없으면 null → 만료된 어제 픽을 폴백 노출하지 않는다.
     // daily_picks(0061) 없으면 null.
-    private static async Task<(string Type, string SpotifyId, string? Note)?> ReadActivePickAsync(
+    private static async Task<(string Type, string SpotifyId, string? Note, DateTimeOffset ExpiresAt)?> ReadActivePickAsync(
         NpgsqlConnection conn, CancellationToken ct)
     {
         try
         {
+            // expires_at = 픽 날짜 다음날 KST 자정(= 오늘 픽 마감 시각)을 UTC instant 로(NON-264 카운트다운).
             await using var cmd = new NpgsqlCommand(
-                "select target_type, target_spotify_id, note from public.daily_picks where pick_date = (timezone('Asia/Seoul', now()))::date limit 1", conn);
+                "select target_type, target_spotify_id, note, (pick_date + 1)::timestamp at time zone 'Asia/Seoul' from public.daily_picks where pick_date = (timezone('Asia/Seoul', now()))::date limit 1", conn);
             await using var r = await cmd.ExecuteReaderAsync(ct);
             if (!await r.ReadAsync(ct)) return null;
-            return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2));
+            return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetFieldValue<DateTimeOffset>(3));
         }
         catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
         {
@@ -509,4 +510,5 @@ public sealed record DailyPickItem(
     string TargetType, string SpotifyId, string? Name, string? Artist,
     string? ImageUrl, IReadOnlyList<ArtistRef>? Artists, bool Explicit, string? Note,
     double? Average, int Count, IReadOnlyList<string> Genres,
-    string? SpotifyUrl, string? Isrc, string? Upc, string? YoutubeUrl);
+    string? SpotifyUrl, string? Isrc, string? Upc, string? YoutubeUrl,
+    DateTimeOffset ExpiresAt);
