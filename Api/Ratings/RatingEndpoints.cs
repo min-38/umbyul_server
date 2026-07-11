@@ -16,6 +16,26 @@ public static class RatingEndpoints
 
     private static string? Trim(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
+    // 표시 메타는 클라 제공값 → 길이 제한. Chart/Discover 가 max()로 집계·팬아웃하므로 무제한 저장 금지(NON-253).
+    private static string? Cap(string? s, int max)
+    {
+        var t = Trim(s);
+        return t is null ? null : t.Length > max ? t[..max] : t;
+    }
+
+    // 커버 이미지: Spotify CDN(https, *.scdn.co / *.spotifycdn.com)만 허용 — off-domain·data: URL 저장 차단.
+    // web safeSpotifyImageUrl 과 동일 규칙(SEC-A-... / NON-253). 비허용이면 null(이미지 없음).
+    private static string? SafeImage(string? s)
+    {
+        var t = Trim(s);
+        if (t is null) return null;
+        return Uri.TryCreate(t, UriKind.Absolute, out var u)
+            && u.Scheme == Uri.UriSchemeHttps
+            && (u.Host.EndsWith(".scdn.co", StringComparison.OrdinalIgnoreCase)
+                || u.Host.EndsWith(".spotifycdn.com", StringComparison.OrdinalIgnoreCase))
+            ? t : null;
+    }
+
     public static void MapRatingEndpoints(this WebApplication app, string? dbConnString)
     {
         var me = app.MapGroup("/me").RequireAuthorization();
@@ -60,10 +80,13 @@ public static class RatingEndpoints
                 cmd.Parameters.AddWithValue("sid", (object?)(string.IsNullOrWhiteSpace(req.SpotifyId) ? null : req.SpotifyId!.Trim()) ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("score", req.Score);
                 cmd.Parameters.AddWithValue("review", (object?)review ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("name", (object?)Trim(req.Name) ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("artist", (object?)Trim(req.Artist) ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("image", (object?)Trim(req.ImageUrl) ?? DBNull.Value);
-                var artistsJson = req.Artists is { Count: > 0 } ? JsonSerializer.Serialize(req.Artists) : null;
+                cmd.Parameters.AddWithValue("name", (object?)Cap(req.Name, 300) ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("artist", (object?)Cap(req.Artist, 300) ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("image", (object?)SafeImage(req.ImageUrl) ?? DBNull.Value);
+                var artists = req.Artists is { Count: > 0 }
+                    ? req.Artists.Take(20).Select(a => new ArtistRef(Cap(a.Id, 64), Cap(a.Name, 200))).ToList()
+                    : null;
+                var artistsJson = artists is { Count: > 0 } ? JsonSerializer.Serialize(artists) : null;
                 cmd.Parameters.Add(new NpgsqlParameter("artists", NpgsqlDbType.Jsonb) { Value = (object?)artistsJson ?? DBNull.Value });
                 cmd.Parameters.AddWithValue("explicit", req.Explicit);
                 var n = await cmd.ExecuteNonQueryAsync();
