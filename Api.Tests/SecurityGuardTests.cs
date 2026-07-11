@@ -21,15 +21,20 @@ public class SecurityGuardTests
     [Fact]
     public void HashViewer_is_16_hex_deterministic()
     {
-        var a = AnnouncementEndpoints.HashViewer("10.0.0.1");
+        var a = AnnouncementEndpoints.HashViewer("10.0.0.1", "ann-1");
         Assert.Equal(16, a.Length);
         Assert.Matches("^[0-9A-F]{16}$", a);
-        Assert.Equal(a, AnnouncementEndpoints.HashViewer("10.0.0.1")); // 결정적
+        Assert.Equal(a, AnnouncementEndpoints.HashViewer("10.0.0.1", "ann-1")); // 같은 공지+IP는 결정적(dedup 유지)
     }
 
     [Fact]
     public void HashViewer_differs_per_ip() =>
-        Assert.NotEqual(AnnouncementEndpoints.HashViewer("10.0.0.1"), AnnouncementEndpoints.HashViewer("10.0.0.2"));
+        Assert.NotEqual(AnnouncementEndpoints.HashViewer("10.0.0.1", "ann-1"), AnnouncementEndpoints.HashViewer("10.0.0.2", "ann-1"));
+
+    // QA9-1: 같은 IP라도 공지가 다르면 해시가 달라야 공지 간 연결성(교차 프로파일링)이 끊긴다.
+    [Fact]
+    public void HashViewer_differs_per_announcement() =>
+        Assert.NotEqual(AnnouncementEndpoints.HashViewer("10.0.0.1", "ann-1"), AnnouncementEndpoints.HashViewer("10.0.0.1", "ann-2"));
 
     // 2) 미디어 프록시 키 — announcements/ 접두 + 경로 이탈 차단(Ordinal 대소문자).
     [Theory]

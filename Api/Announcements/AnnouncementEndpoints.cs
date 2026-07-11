@@ -188,7 +188,7 @@ public static class AnnouncementEndpoints
             // (raw XFF는 클라가 스푸핑 가능 → 미신뢰, QA4-3). 브라우저 직결이라 여기서 RemoteIpAddress는 실제 방문자.
             var viewer = user.FindFirstValue("sub") is { Length: > 0 } sub && Guid.TryParse(sub, out _)
                 ? $"u:{sub}"
-                : $"ip:{HashIp(http)}";
+                : $"ip:{HashIp(http, aid)}";
             try
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
@@ -220,14 +220,16 @@ public static class AnnouncementEndpoints
         string.IsNullOrEmpty(remoteIp) ? "unknown" : remoteIp;
 
     // 익명 뷰어 식별자 — IP를 솔트+SHA256으로 해시(원본 IP 미저장, 프라이버시). 16 hex 결정적.
+    // 해시 입력에 announcement_id를 포함해 같은 IP라도 공지마다 다른 해시가 나오게 한다(QA9-1): 공지 내 dedup은
+    // 유지하되 공지 간 연결성(익명 방문자의 교차 열람 프로파일)을 차단 — 고정 솔트만으론 IP당 영구 동일 해시였음.
     private const string ViewSalt = "glitter-ann-view-v1";
-    public static string HashViewer(string ip)
+    public static string HashViewer(string ip, string announcementId)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(ViewSalt + ip));
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(ViewSalt + announcementId + ":" + ip));
         return Convert.ToHexString(bytes)[..16];
     }
 
     // raw XFF는 무시(스푸핑 가능) — RemoteIpAddress만 해석해 해시(QA4-3). XFF 헤더는 무시됨을 명시적으로 전달.
-    private static string HashIp(HttpContext http) =>
-        HashViewer(ResolveClientIp(http.Request.Headers["X-Forwarded-For"].FirstOrDefault(), http.Connection.RemoteIpAddress?.ToString()));
+    private static string HashIp(HttpContext http, Guid announcementId) =>
+        HashViewer(ResolveClientIp(http.Request.Headers["X-Forwarded-For"].FirstOrDefault(), http.Connection.RemoteIpAddress?.ToString()), announcementId.ToString());
 }

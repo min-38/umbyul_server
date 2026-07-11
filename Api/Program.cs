@@ -109,6 +109,9 @@ builder.Services.AddSingleton<ISpotifyResponseCache>(
 // 오래된 spotify_cache 주기 삭제(LEG-7 / DB-16). DB 미설정이면 미등록.
 if (dbConnString is not null)
     builder.Services.AddHostedService(_ => new SpotifyCachePurgeService(dbConnString));
+// 보존 기한 있는 개인정보성 행 주기 파기(9차 QA). DB 미설정이면 미등록.
+if (dbConnString is not null)
+    builder.Services.AddHostedService(_ => new Api.Maintenance.RetentionPurgeService(dbConnString));
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 

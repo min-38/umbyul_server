@@ -244,8 +244,28 @@ public static class AccountEndpoints
                 }
                 catch (NpgsqlException) { }
 
+                // 로그인 상태로 연 공지 열람 이력(u: 행) — Art.15/20 완전성(QA9-1). 익명 ip: 행은 본인 데이터 아님.
+                var announcementViews = new List<ExportAnnouncementView>();
+                try
+                {
+                    await using var cmd = new NpgsqlCommand(
+                        """
+                        select v.announcement_id, v.created_at,
+                               (select l.title from public.announcement_locales l
+                                where l.announcement_id = v.announcement_id order by (l.locale <> 'ko') limit 1)
+                        from public.announcement_views v
+                        where v.viewer = @viewer order by v.created_at
+                        """, conn);
+                    cmd.Parameters.AddWithValue("viewer", "u:" + uid);
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    while (await r.ReadAsync(ct))
+                        announcementViews.Add(new ExportAnnouncementView(
+                            r.GetGuid(0).ToString(), r.IsDBNull(2) ? null : r.GetString(2), r.GetFieldValue<DateTimeOffset>(1)));
+                }
+                catch (NpgsqlException) { } // announcement_views 미존재 등 — 생략
+
                 return ApiResults.Ok("OK", new ExportData(
-                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked));
+                    DateTimeOffset.UtcNow, profile, ratings, following, followers, comments, sets, blocked, announcementViews));
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
@@ -281,7 +301,8 @@ public sealed record ExportData(
     DateTimeOffset ExportedAt, ExportProfile? Profile,
     IReadOnlyList<ExportRating> Ratings, IReadOnlyList<string> Following,
     IReadOnlyList<string> Followers, IReadOnlyList<ExportComment> Comments,
-    IReadOnlyList<ExportSet> Sets, IReadOnlyList<string> Blocked);
+    IReadOnlyList<ExportSet> Sets, IReadOnlyList<string> Blocked,
+    IReadOnlyList<ExportAnnouncementView> AnnouncementViews);
 public sealed record ExportProfile(
     string Username, string? Email, string? Country, string? BirthDate, string? Gender, string? Locale, string? AvatarUrl, DateTimeOffset JoinedAt);
 public sealed record ExportRating(
@@ -289,3 +310,4 @@ public sealed record ExportRating(
     decimal Score, string? Review, DateTimeOffset CreatedAt);
 public sealed record ExportComment(string Body, DateTimeOffset CreatedAt);
 public sealed record ExportSet(string Title, string? Note, DateTimeOffset CreatedAt);
+public sealed record ExportAnnouncementView(string AnnouncementId, string? Title, DateTimeOffset ViewedAt);
