@@ -112,6 +112,17 @@ if (dbConnString is not null)
 // 보존 기한 있는 개인정보성 행 주기 파기(9차 QA). DB 미설정이면 미등록.
 if (dbConnString is not null)
     builder.Services.AddHostedService(_ => new Api.Maintenance.RetentionPurgeService(dbConnString));
+
+// Api 시스템 로그를 app_logs로 싱크(NON-52). DB 미설정이면 미등록.
+// min_level(Admin 설정)은 싱크가 15초 TTL로 캐싱해 게이트 — 프레임워크 사전 필터를 Trace로 열어 우리 게이트가 authoritative.
+if (dbConnString is not null)
+{
+    var logSink = new Api.Logging.DbLogSink(dbConnString);
+    builder.Services.AddSingleton(logSink);
+    builder.Services.AddHostedService(_ => logSink);
+    builder.Logging.AddProvider(new Api.Logging.DbLoggerProvider(logSink));
+    builder.Logging.AddFilter<Api.Logging.DbLoggerProvider>(null, LogLevel.Trace);
+}
 builder.Services.AddSingleton<SpotifyClient>();
 builder.Services.AddSingleton<R2Storage>();
 
