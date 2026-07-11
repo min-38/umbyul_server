@@ -84,6 +84,8 @@ else
                     <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
                 </div>
                 <textarea class="form-control form-control-sm mb-3" rows="2" placeholder="메모 (선택 · 운영자 코멘트, 카드엔 표시 안 됨)" @bind="note"></textarea>
+                <input class="form-control form-control-sm mb-1" placeholder="YouTube URL (선택 · 카드에 YouTube 아이콘 표시)" @bind="youtubeUrl" />
+                <p class="text-muted small mb-3">이미 리뷰가 있는 곡이면 정확히 연결됩니다. 아직 리뷰가 없는 곡은 리뷰가 생기기 전엔 카드에 안 뜰 수 있어요(리뷰된 음악 목록에서 다시 넣으면 확실).</p>
                 <div class="d-flex align-items-center gap-2">
                     <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
                     @if (msg is not null)
@@ -104,6 +106,7 @@ else
     private string targetType = "track";
     private string spotifyId = "";
     private string note = "";
+    private string youtubeUrl = "";
     private DateOnly pickDate;
     private string? msg;
     private bool err;
@@ -125,13 +128,14 @@ else
         targetType = "track";
         spotifyId = "";
         note = "";
+        youtubeUrl = "";
         // 순단 시 서킷 사망 대신 오늘로 폴백(픽 없을 때의 기본값과 동일, NON-218).
         try { pickDate = await Db.NextPickDateAsync(); }
         catch (Exception) { pickDate = DateOnly.FromDateTime(DateTime.UtcNow); }
         msg = null;
     }
 
-    private void Edit(DailyPickAdminRow row)
+    private async Task Edit(DailyPickAdminRow row)
     {
         editing = true;
         id = row.Id;
@@ -140,6 +144,9 @@ else
         note = row.Note ?? "";
         pickDate = row.PickDate;
         msg = null;
+        // 기존 YouTube 링크 프리필(NON-265). 실패해도 편집은 계속.
+        try { youtubeUrl = await Db.GetYoutubeUrlForTargetAsync(row.TargetType, row.SpotifyId) ?? ""; }
+        catch (Exception) { youtubeUrl = ""; }
     }
 
     private void CloseEditor() { editing = false; msg = null; }
@@ -154,6 +161,12 @@ else
                 ? await Db.UpdateDailyPickAsync(eid, targetType, spotifyId, note, pickDate, actor)
                 : await Db.CreateDailyPickAsync(targetType, spotifyId, note, pickDate, actor);
             if (!ok) { err = true; msg = error ?? "저장하지 못했습니다."; return; }
+            // 픽 저장 성공 후 YouTube 링크도 함께 저장(선택, NON-265). 링크 실패는 픽 저장을 무르지 않음.
+            if (!string.IsNullOrWhiteSpace(youtubeUrl))
+            {
+                var (ytOk, ytErr) = await Db.SaveYoutubeLinkAsync(targetType, spotifyId, youtubeUrl, actor);
+                if (!ytOk) { err = true; msg = $"픽은 저장됨, YouTube 링크 실패: {ytErr}"; picks = await Db.ListDailyPicksAsync(); return; }
+            }
             err = false; msg = "저장됨";
             notice = null;
             picks = await Db.ListDailyPicksAsync();

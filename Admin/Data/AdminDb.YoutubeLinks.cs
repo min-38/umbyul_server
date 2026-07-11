@@ -46,6 +46,22 @@ public sealed partial class AdminDb
         return (true, null);
     }
 
+    // 오늘의 픽 편집 프리필용(NON-265): spotify_id(또는 target_id)로 저장된 YouTube 링크 조회. 없으면 null.
+    public async Task<string?> GetYoutubeUrlForTargetAsync(string targetType, string idInput, CancellationToken ct = default)
+    {
+        if (!Configured) return null;
+        targetType = targetType?.Trim() ?? "";
+        idInput = idInput?.Trim() ?? "";
+        if (targetType is not ("track" or "album") || idInput.Length == 0) return null;
+        await using var conn = await OpenAsync(ct);
+        var targetId = await ResolveTargetIdAsync(conn, targetType, idInput, ct);
+        await using var cmd = new NpgsqlCommand(
+            "select youtube_url from public.target_youtube_links where target_type = @t and target_id = @id", conn);
+        cmd.Parameters.AddWithValue("t", targetType);
+        cmd.Parameters.AddWithValue("id", targetId);
+        return await cmd.ExecuteScalarAsync(ct) as string;
+    }
+
     public async Task<(bool Ok, string? Error)> DeleteYoutubeLinkAsync(string targetType, string targetId, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
