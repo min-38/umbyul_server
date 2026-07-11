@@ -22,6 +22,9 @@ public sealed class RetentionPurgeService(string dbConnString) : BackgroundServi
         // QA9-5: 처리 완료된 문의(이메일+자유텍스트, user_id 링크 없어 계정삭제 cascade 밖)는 1년 후 파기.
         ("inquiries handled",
             "delete from public.inquiries where handled and handled_at < now() - interval '1 year'"),
+        // NON-52: Api 시스템 로그는 30일 후 파기 — 무한 증가 방지.
+        ("app_logs",
+            "delete from public.app_logs where created_at < now() - interval '30 days'"),
     ];
 
     protected override async Task ExecuteAsync(CancellationToken ct)
