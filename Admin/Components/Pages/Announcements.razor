@@ -32,7 +32,8 @@
 else
 {
     <div class="card mb-4">
-        <div class="card-body d-flex align-items-center gap-2 py-2">
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(items.Count)개 공지</span>
             <button class="btn btn-sm btn-outline-secondary" @onclick="Load">새로고침</button>
             <button class="btn btn-sm btn-primary ms-auto" @onclick="NewAnnouncement" disabled="@Busy">+ 새 공지</button>
         </div>
@@ -41,7 +42,7 @@ else
             <tbody>
                 @if (items.Count == 0)
                 {
-                    <tr><td colspan="4" class="text-center text-muted py-4">공지가 없습니다.</td></tr>
+                    <tr><td colspan="4" class="empty-state"><span class="empty-icon">✎</span>공지가 없습니다.</td></tr>
                 }
                 else
                 {
@@ -60,7 +61,7 @@ else
                                 }
                             </td>
                             <td class="text-muted small">@it.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                            <td class="text-end">
+                            <td class="text-end row-actions">
                                 <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(it.Id)" @onclick:stopPropagation disabled="@Busy">삭제</button>
                             </td>
                         </tr>
@@ -72,7 +73,7 @@ else
 
     @if (editing && id is { } aid)
     {
-        <div class="card">
+        <div class="card edit-card">
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
                     <span class="badge @(published ? "bg-success" : "bg-secondary")">@(published ? "게시됨" : "초안")</span>

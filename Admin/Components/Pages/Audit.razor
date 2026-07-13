@@ -23,52 +23,57 @@
 }
 else
 {
-    <div class="mb-3 d-flex flex-wrap align-items-center gap-1">
-        <input class="form-control form-control-sm" style="width:150px" placeholder="동작(action)" @bind="fAction" @bind:event="oninput" @onkeyup="OnKey" />
-        <input class="form-control form-control-sm" style="width:150px" placeholder="관리자" @bind="fAdmin" @bind:event="oninput" @onkeyup="OnKey" />
-        <select class="form-select form-select-sm" style="width:auto" @bind="fPeriod" @bind:after="Load">
-            <option value="">전체 기간</option>
-            <option value="1">최근 1일</option>
-            <option value="7">최근 7일</option>
-            <option value="30">최근 30일</option>
-        </select>
-        <button class="btn btn-sm btn-primary" @onclick="Load" disabled="@Busy">검색</button>
-    </div>
-
-    @if (actions is null)
-    {
-        <p class="text-muted">불러오는 중…</p>
-    }
-    else if (actions.Count == 0)
-    {
-        <div class="card"><div class="card-body text-center text-muted py-5">기록이 없습니다.</div></div>
-    }
-    else
-    {
-        <div class="card">
-        <table class="table table-sm table-hover align-middle mb-0">
-            <thead><tr><th>시각</th><th>관리자</th><th>동작</th><th>대상</th><th>상세</th></tr></thead>
-            <tbody>
-                @foreach (var a in actions)
-                {
-                    <tr>
-                        <td class="small">@a.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
-                        <td class="small">@a.AdminUsername</td>
-                        <td class="small"><code>@a.Action</code></td>
-                        <td class="small">@a.Target</td>
-                        <td class="small">@a.Detail</td>
-                    </tr>
-                }
-            </tbody>
-        </table>
+    <div class="card">
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(actions?.Count ?? 0)건</span>
+            <input class="form-control form-control-sm" style="width:150px" placeholder="동작(action)" @bind="fAction" @bind:event="oninput" @onkeyup="OnKey" />
+            <input class="form-control form-control-sm" style="width:150px" placeholder="관리자" @bind="fAdmin" @bind:event="oninput" @onkeyup="OnKey" />
+            <select class="form-select form-select-sm" style="width:auto" @bind="fPeriod" @bind:after="Load">
+                <option value="">전체 기간</option>
+                <option value="1">최근 1일</option>
+                <option value="7">최근 7일</option>
+                <option value="30">최근 30일</option>
+            </select>
+            <button class="btn btn-sm btn-primary" @onclick="Load" disabled="@Busy">검색</button>
         </div>
-
-        @if (hasMore)
+        @if (actions is null)
         {
-            <div class="text-center mt-3">
-                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+            <div class="card-body text-muted">불러오는 중…</div>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead><tr><th>시각</th><th>관리자</th><th>동작</th><th>대상</th><th>상세</th></tr></thead>
+                    <tbody>
+                        @if (actions.Count == 0)
+                        {
+                            <tr><td colspan="5" class="empty-state"><span class="empty-icon">∅</span>기록이 없습니다.</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var a in actions)
+                            {
+                                <tr>
+                                    <td class="small">@a.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</td>
+                                    <td class="small">@a.AdminUsername</td>
+                                    <td class="small"><code>@a.Action</code></td>
+                                    <td class="small">@a.Target</td>
+                                    <td class="small">@a.Detail</td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
             </div>
         }
+    </div>
+
+    @if (actions is not null && hasMore)
+    {
+        <div class="text-center mt-3">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+        </div>
     }
 }
 

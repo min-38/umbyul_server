@@ -26,16 +26,16 @@
 else
 {
     <div class="card mb-4">
-        <div class="card-body d-flex justify-content-between align-items-center py-2">
-            <h6 class="text-muted mb-0">문서 목록</h6>
-            <button class="btn btn-sm btn-primary" @onclick="NewDoc">+ 새 문서 작성</button>
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(docs.Count)개 문서</span>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewDoc">+ 새 문서 작성</button>
         </div>
         <table class="table table-sm table-hover align-middle mb-0">
             <thead><tr><th>종류</th><th>로케일</th><th>상태</th><th>최종 수정</th></tr></thead>
             <tbody>
                 @if (docs.Count == 0)
                 {
-                    <tr><td colspan="4" class="text-center text-muted py-4">아직 문서가 없습니다. "새 문서 작성"으로 시작하세요.</td></tr>
+                    <tr><td colspan="4" class="empty-state"><span class="empty-icon">§</span>아직 문서가 없습니다. "새 문서 작성"으로 시작하세요.</td></tr>
                 }
                 else
                 {
@@ -64,7 +64,7 @@ else
 
     @if (editing)
     {
-        <div class="card">
+        <div class="card edit-card">
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
                     @if (isNew)

@@ -30,8 +30,8 @@
 else
 {
     <div class="card mb-4">
-        <div class="card-body d-flex align-items-center gap-2 py-2">
-            <span class="text-muted small">@(picks.Count)개 픽</span>
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(picks.Count)개 픽</span>
             <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 픽</button>
         </div>
         <table class="table table-sm table-hover align-middle mb-0">
@@ -39,7 +39,7 @@ else
             <tbody>
                 @if (picks.Count == 0)
                 {
-                    <tr><td colspan="5" class="text-center text-muted py-4">픽이 없습니다.</td></tr>
+                    <tr><td colspan="5" class="empty-state"><span class="empty-icon">☆</span>픽이 없습니다. 우측 상단 "+ 새 픽"으로 추가하세요.</td></tr>
                 }
                 else
                 {
@@ -53,7 +53,7 @@ else
                             <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
                             <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.SpotifyId</td>
                             <td class="text-muted small text-truncate" style="max-width:18rem">@(row.Note ?? "—")</td>
-                            <td class="text-end">
+                            <td class="text-end row-actions">
                                 <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" @onclick:stopPropagation disabled="@Busy">삭제</button>
                             </td>
                         </tr>
@@ -65,7 +65,7 @@ else
 
     @if (editing)
     {
-        <div class="card">
+        <div class="card edit-card">
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
                     <span class="badge @(id is null ? "bg-primary" : "bg-secondary")">@(id is null ? "새 픽" : "편집")</span>

@@ -15,16 +15,6 @@
     <p class="subtitle">접수된 신고를 검토하고 리뷰를 조치합니다.</p>
 </div>
 
-<div class="mb-3 d-flex align-items-center gap-1">
-    <span class="text-muted small me-1">상태</span>
-    @foreach (var (key, label) in Filters)
-    {
-        <button class="btn btn-sm @(filter == key ? "btn-primary" : "btn-outline-secondary")"
-                @onclick="() => Load(key)">@label</button>
-    }
-    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="() => Load(filter)" disabled="@Busy">새로고침</button>
-</div>
-
 @if (Error is not null)
 {
     <div class="alert alert-danger py-2">@Error</div>
@@ -38,13 +28,20 @@ else if (reports is null)
 {
     <p class="text-muted">불러오는 중…</p>
 }
-else if (reports.Count == 0)
-{
-    <div class="card"><div class="card-body text-center text-muted py-5">해당 상태의 신고가 없습니다.</div></div>
-}
 else
 {
     <div class="card">
+    <div class="card-toolbar">
+        <span class="toolbar-count">@(reports.Count)건</span>
+        <span class="text-muted small me-1">상태</span>
+        @foreach (var (key, label) in Filters)
+        {
+            <button class="btn btn-sm @(filter == key ? "btn-primary" : "btn-outline-secondary")"
+                    @onclick="() => Load(key)">@label</button>
+        }
+        <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="() => Load(filter)" disabled="@Busy">새로고침</button>
+    </div>
+    <div class="table-scroll">
     <table class="table table-sm table-hover align-middle mb-0">
         <thead>
             <tr>
@@ -52,6 +49,10 @@ else
             </tr>
         </thead>
         <tbody>
+            @if (reports.Count == 0)
+            {
+                <tr><td colspan="7" class="empty-state"><span class="empty-icon">⚑</span>해당 상태의 신고가 없습니다.</td></tr>
+            }
             @foreach (var r in reports)
             {
                 <tr>
@@ -100,6 +101,7 @@ else
             }
         </tbody>
     </table>
+    </div>
     </div>
 
     @if (hasMore)

@@ -45,11 +45,12 @@ else if (items is null)
 }
 else if (items.Count == 0)
 {
-    <div class="card"><div class="card-body text-center text-muted py-5">문의가 없습니다.</div></div>
+    <div class="card"><div class="card-body empty-state"><span class="empty-icon">✉</span>문의가 없습니다. 필터를 "전체"로 바꿔 지난 문의를 볼 수 있습니다.</div></div>
 }
 else
 {
     <div class="card">
+    <div class="table-scroll">
     <table class="table table-sm table-hover align-middle mb-0">
         <thead><tr><th>카테고리</th><th>이메일</th><th>제목</th><th>접수</th><th>상태</th><th class="text-end">처리</th></tr></thead>
         <tbody>
@@ -70,7 +71,7 @@ else
                             <span class="badge bg-warning text-dark">미처리</span>
                         }
                     </td>
-                    <td class="text-end" @onclick:stopPropagation>
+                    <td class="text-end row-actions" @onclick:stopPropagation>
                         @if (q.Handled)
                         {
                             <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetHandled(q.Id, false)" disabled="@Busy">되돌리기</button>
@@ -99,6 +100,7 @@ else
             }
         </tbody>
     </table>
+    </div>
     </div>
 
     @if (hasMore)

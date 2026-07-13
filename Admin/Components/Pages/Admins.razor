@@ -26,11 +26,18 @@
 else
 {
     <div class="card mb-4" style="max-width:520px">
-        <div class="card-body">
-            <h6 class="card-title text-muted mb-3">관리자 계정</h6>
-            <table class="table table-sm align-middle mb-3">
-                <thead><tr><th>아이디</th><th>생성일</th><th>상태</th><th class="text-end">조치</th></tr></thead>
-                <tbody>
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(admins.Count)명</span>
+        </div>
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th>아이디</th><th>생성일</th><th>상태</th><th class="text-end">조치</th></tr></thead>
+            <tbody>
+                @if (admins.Count == 0)
+                {
+                    <tr><td colspan="4" class="empty-state"><span class="empty-icon">∅</span>관리자가 없습니다.</td></tr>
+                }
+                else
+                {
                     @foreach (var a in admins)
                     {
                         <tr>
@@ -43,7 +50,7 @@ else
                                 @if (a.IsActive) { <span class="badge bg-success">활성</span> }
                                 else { <span class="badge bg-secondary">비활성</span> }
                             </td>
-                            <td class="text-end">
+                            <td class="text-end row-actions">
                                 @if (a.Id != myId)
                                 {
                                     @if (a.IsActive)
@@ -58,9 +65,14 @@ else
                             </td>
                         </tr>
                     }
-                </tbody>
-            </table>
+                }
+            </tbody>
+        </table>
+    </div>
 
+    <div class="card edit-card mb-4" style="max-width:520px">
+        <div class="card-body">
+            <h6 class="card-title text-muted mb-3">관리자 추가</h6>
             @if (msg is not null)
             {
                 <p class="@(ok ? "text-success" : "text-danger") small">@msg</p>

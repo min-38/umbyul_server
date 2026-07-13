@@ -95,6 +95,68 @@ a, .btn-link {
     box-shadow: 0 0 0 0.2rem rgba(139, 92, 246, 0.35);
 }
 
+/* ── CRUD 표준 패턴 컴포넌트 ── */
+
+/* 카드 상단 툴바: 카운트·필터 좌측, 주 액션 우측(ms-auto) */
+.card-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid #262838;
+}
+
+    .card-toolbar .toolbar-count {
+        font-size: 0.82rem;
+        color: #9296ab;
+    }
+
+/* 목록 비었을 때 */
+.empty-state {
+    text-align: center;
+    color: #6f7288;
+    padding: 3rem 1rem;
+    font-size: 0.9rem;
+}
+
+    .empty-state .empty-icon {
+        display: block;
+        font-size: 1.5rem;
+        opacity: 0.45;
+        margin-bottom: 0.4rem;
+    }
+
+/* 행 액션(삭제 등): 평소 흐리게, 행 호버/포커스 시 선명 */
+.row-actions {
+    opacity: 0.25;
+    transition: opacity 0.12s ease;
+    white-space: nowrap;
+}
+
+tr:hover .row-actions, .row-actions:focus-within {
+    opacity: 1;
+}
+
+/* 편집 카드: 바이올렛 테두리로 '편집 중' 상태 강조 */
+.edit-card {
+    border-color: #4c1d95;
+    box-shadow: 0 0 0 1px rgba(109, 40, 217, 0.3), 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* 긴 목록: 스크롤 컨테이너 + 스티키 헤더 */
+.table-scroll {
+    max-height: 68vh;
+    overflow-y: auto;
+}
+
+    .table-scroll thead th {
+        position: sticky;
+        top: 0;
+        background-color: #171826;
+        z-index: 1;
+    }
+
 .content {
     padding-top: 1.1rem;
 }

@@ -19,9 +19,12 @@
 }
 else
 {
-    <div class="mb-3 d-flex gap-2" style="max-width:480px">
-        <input class="form-control form-control-sm" placeholder="유저명·리뷰 내용 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
-        <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load" disabled="@Busy">검색</button>
+    <div class="card mb-3">
+        <div class="card-toolbar">
+            @if (reviews is not null) { <span class="toolbar-count">@(reviews.Count)개</span> }
+            <input class="form-control form-control-sm" style="max-width:320px" placeholder="유저명·리뷰 내용 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+            <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load" disabled="@Busy">검색</button>
+        </div>
     </div>
 
     @if (Error is not null)
@@ -35,13 +38,13 @@ else
     }
     else if (reviews.Count == 0)
     {
-        <div class="card"><div class="card-body text-center text-muted py-5">리뷰가 없습니다.</div></div>
+        <div class="card"><div class="empty-state"><span class="empty-icon">♪</span>리뷰가 없습니다.</div></div>
     }
     else
     {
         @foreach (var r in reviews)
         {
-            <div class="card mb-2" @key="r.Id">
+            <div class="card mb-2 @(deletingId == r.Id || sanctionId == r.Id ? "edit-card" : "")" @key="r.Id">
                 <div class="card-body py-2">
                     <div class="d-flex align-items-center gap-2 mb-1 small">
                         <span class="badge @(r.TargetType == "track" ? "bg-primary" : "bg-success")">@(r.TargetType == "track" ? "곡" : "앨범")</span>

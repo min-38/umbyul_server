@@ -23,27 +23,28 @@
 }
 else
 {
-    <div class="mb-3 d-flex gap-2" style="max-width:420px">
-        <input class="form-control form-control-sm" placeholder="유저명·이메일 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
-        <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load" disabled="@Busy">검색</button>
-    </div>
-
     @if (users is null)
     {
         <p class="text-muted">불러오는 중…</p>
     }
-    else if (users.Count == 0)
-    {
-        <div class="card"><div class="card-body text-center text-muted py-5">유저가 없습니다.</div></div>
-    }
     else
     {
         <div class="card">
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(users.Count)명</span>
+            <input class="form-control form-control-sm" style="max-width:280px" placeholder="유저명·이메일 검색" @bind="search" @bind:event="oninput" @onkeyup="OnKey" />
+            <button class="btn btn-sm btn-primary text-nowrap" @onclick="Load" disabled="@Busy">검색</button>
+        </div>
+        <div class="table-scroll">
         <table class="table table-sm table-hover align-middle mb-0">
             <thead>
                 <tr><th>유저</th><th>가입</th><th>상태</th><th class="text-center">신고</th><th>제재</th></tr>
             </thead>
             <tbody>
+                @if (users.Count == 0)
+                {
+                    <tr><td colspan="5" class="empty-state"><span class="empty-icon">☆</span>유저가 없습니다.</td></tr>
+                }
                 @foreach (var u in users)
                 {
                     <tr>
@@ -101,6 +102,7 @@ else
                 }
             </tbody>
         </table>
+        </div>
         </div>
 
         @if (hasMore)

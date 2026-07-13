@@ -43,75 +43,80 @@ else
         </div>
     </div>
 
-    <div class="mb-3 d-flex flex-wrap align-items-center gap-1">
-        <select class="form-select form-select-sm" style="width:auto" @bind="fLevel" @bind:after="Load">
-            <option value="">전체 레벨</option>
-            @foreach (var lv in Levels)
-            {
-                <option value="@lv">@lv</option>
-            }
-        </select>
-        <input class="form-control form-control-sm" style="width:220px" placeholder="메시지·카테고리 검색" @bind="fSearch" @bind:event="oninput" @onkeyup="OnKey" />
-        <select class="form-select form-select-sm" style="width:auto" @bind="fPeriod" @bind:after="Load">
-            <option value="1">최근 1일</option>
-            <option value="7">최근 7일</option>
-            <option value="30">최근 30일</option>
-            <option value="">전체 기간</option>
-        </select>
-        <button class="btn btn-sm btn-primary" @onclick="Load" disabled="@Busy">검색</button>
-        <button class="btn btn-sm btn-outline-secondary" @onclick="Load" disabled="@Busy">새로고침</button>
-    </div>
-
-    @if (logs is null)
-    {
-        <p class="text-muted">불러오는 중…</p>
-    }
-    else if (logs.Count == 0)
-    {
-        <div class="card"><div class="card-body text-center text-muted py-5">로그가 없습니다.</div></div>
-    }
-    else
-    {
-        <div class="card">
-        <table class="table table-sm table-hover align-middle mb-0">
-            <thead><tr><th style="width:9rem">시각</th><th style="width:6rem">레벨</th><th>메시지</th></tr></thead>
-            <tbody>
-                @foreach (var (l, i) in logs.Select((x, i) => (x, i)))
+    <div class="card">
+        <div class="card-toolbar">
+            <span class="toolbar-count">@(logs?.Count ?? 0)건</span>
+            <select class="form-select form-select-sm" style="width:auto" @bind="fLevel" @bind:after="Load">
+                <option value="">전체 레벨</option>
+                @foreach (var lv in Levels)
                 {
-                    <tr style="cursor:pointer" @onclick="() => Toggle(i)">
-                        <td class="small text-nowrap">@l.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
-                        <td><span class="badge @BadgeClass(l.Level)">@l.Level</span></td>
-                        <td class="small">
-                            <div class="text-truncate" style="max-width:52rem">@l.Message</div>
-                            @if (!string.IsNullOrEmpty(l.Category))
-                            {
-                                <div class="text-muted" style="font-size:.72rem">@l.Category</div>
-                            }
-                        </td>
-                    </tr>
-                    @if (openIdx == i && l.Exception is not null)
-                    {
-                        <tr class="table-active">
-                            <td colspan="3"><pre class="small mb-0" style="white-space:pre-wrap">@l.Exception</pre></td>
-                        </tr>
-                    }
-                    else if (openIdx == i)
-                    {
-                        <tr class="table-active">
-                            <td colspan="3"><div class="small mb-0" style="white-space:pre-wrap">@l.Message</div></td>
-                        </tr>
-                    }
+                    <option value="@lv">@lv</option>
                 }
-            </tbody>
-        </table>
+            </select>
+            <input class="form-control form-control-sm" style="width:220px" placeholder="메시지·카테고리 검색" @bind="fSearch" @bind:event="oninput" @onkeyup="OnKey" />
+            <select class="form-select form-select-sm" style="width:auto" @bind="fPeriod" @bind:after="Load">
+                <option value="1">최근 1일</option>
+                <option value="7">최근 7일</option>
+                <option value="30">최근 30일</option>
+                <option value="">전체 기간</option>
+            </select>
+            <button class="btn btn-sm btn-primary" @onclick="Load" disabled="@Busy">검색</button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Load" disabled="@Busy">새로고침</button>
         </div>
-
-        @if (hasMore)
+        @if (logs is null)
         {
-            <div class="text-center mt-3">
-                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+            <div class="card-body text-muted">불러오는 중…</div>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead><tr><th style="width:9rem">시각</th><th style="width:6rem">레벨</th><th>메시지</th></tr></thead>
+                    <tbody>
+                        @if (logs.Count == 0)
+                        {
+                            <tr><td colspan="3" class="empty-state"><span class="empty-icon">∅</span>로그가 없습니다.</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var (l, i) in logs.Select((x, i) => (x, i)))
+                            {
+                                <tr style="cursor:pointer" @onclick="() => Toggle(i)">
+                                    <td class="small text-nowrap">@l.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                                    <td><span class="badge @BadgeClass(l.Level)">@l.Level</span></td>
+                                    <td class="small">
+                                        <div class="text-truncate" style="max-width:52rem">@l.Message</div>
+                                        @if (!string.IsNullOrEmpty(l.Category))
+                                        {
+                                            <div class="text-muted" style="font-size:.72rem">@l.Category</div>
+                                        }
+                                    </td>
+                                </tr>
+                                @if (openIdx == i && l.Exception is not null)
+                                {
+                                    <tr class="table-active">
+                                        <td colspan="3"><pre class="small mb-0" style="white-space:pre-wrap">@l.Exception</pre></td>
+                                    </tr>
+                                }
+                                else if (openIdx == i)
+                                {
+                                    <tr class="table-active">
+                                        <td colspan="3"><div class="small mb-0" style="white-space:pre-wrap">@l.Message</div></td>
+                                    </tr>
+                                }
+                            }
+                        }
+                    </tbody>
+                </table>
             </div>
         }
+    </div>
+
+    @if (logs is not null && hasMore)
+    {
+        <div class="text-center mt-3">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMore" disabled="@Busy">더 보기</button>
+        </div>
     }
 }
 
