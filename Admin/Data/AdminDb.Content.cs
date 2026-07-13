@@ -33,33 +33,55 @@ public sealed partial class AdminDb
         return (r.GetString(0), r.GetBoolean(1));
     }
 
-    // 초안 저장. publish=true 면 legal_versions 에 불변 스냅샷도 남긴다(NON-69). version=라벨(NON-70), effectiveDate=시행일(미입력이면 게시일, NON-72).
-    public async Task SaveLegalDocAsync(string type, string locale, string content, string? version, DateOnly? effectiveDate, bool published, Actor actor, CancellationToken ct = default)
+    // 초안 저장(단일 로케일 content 만). 게시 상태·버전·시행일은 건드리지 않음 — 게시는 릴리스(다국어 원자)로만.
+    public async Task SaveLegalDraftAsync(string type, string locale, string content, Actor actor, CancellationToken ct = default)
+    {
+        if (!Configured) return;
+        await using var conn = await OpenAsync(ct);
+        await using (var cmd = new NpgsqlCommand(
+            """
+            insert into public.legal_documents (type, locale, content, published, updated_at, updated_by)
+            values (@t, @l, @c, false, now(), @by)
+            on conflict (type, locale) do update
+                set content = excluded.content, updated_at = now(), updated_by = excluded.updated_by
+            """, conn))
+        {
+            cmd.Parameters.AddWithValue("t", type);
+            cmd.Parameters.AddWithValue("l", locale);
+            cmd.Parameters.AddWithValue("c", content);
+            cmd.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await LogAsync(conn, actor, "legal.save", $"{type}/{locale}", null, ct);
+    }
+
+    // 원자적 다국어 게시(릴리스): 모든 필수 로케일을 같은 version·effective_date 로 한 트랜잭션에 스냅샷.
+    // contents = 로케일→내용(호출 전 전부 비어있지 않음을 검증). 언어별 버전 어긋남 방지(설계 결정).
+    public async Task PublishLegalReleaseAsync(string type, string version, DateOnly? effectiveDate,
+        IReadOnlyDictionary<string, string> contents, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return;
         await using var conn = await OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
-        await using (var cmd = new NpgsqlCommand(
-            """
-            insert into public.legal_documents (type, locale, content, published, updated_at, updated_by)
-            values (@t, @l, @c, @p, now(), @by)
-            on conflict (type, locale) do update
-                set content = excluded.content, published = legal_documents.published or excluded.published,
-                    updated_at = now(), updated_by = excluded.updated_by
-            """, conn, tx))
+        foreach (var (locale, content) in contents)
         {
-            cmd.Parameters.AddWithValue("t", type);
-            cmd.Parameters.AddWithValue("l", locale);
-            cmd.Parameters.AddWithValue("c", content);
-            cmd.Parameters.AddWithValue("p", published);
-            cmd.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
-            await cmd.ExecuteNonQueryAsync(ct);
-        }
-
-        if (published)
-        {
-            // (종류×로케일)당 current 는 하나만: 이전 current 해제 후 새 것을 current 로(NON-71).
+            // 초안 upsert(published=true)
+            await using (var doc = new NpgsqlCommand(
+                """
+                insert into public.legal_documents (type, locale, content, published, updated_at, updated_by)
+                values (@t, @l, @c, true, now(), @by)
+                on conflict (type, locale) do update
+                    set content = excluded.content, published = true, updated_at = now(), updated_by = excluded.updated_by
+                """, conn, tx))
+            {
+                doc.Parameters.AddWithValue("t", type);
+                doc.Parameters.AddWithValue("l", locale);
+                doc.Parameters.AddWithValue("c", content);
+                doc.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+                await doc.ExecuteNonQueryAsync(ct);
+            }
+            // (종류×로케일)당 current 는 하나만: 이전 current 해제(NON-71).
             await using (var clear = new NpgsqlCommand(
                 "update public.legal_versions set is_current = false where type = @t and locale = @l and is_current", conn, tx))
             {
@@ -67,56 +89,76 @@ public sealed partial class AdminDb
                 clear.Parameters.AddWithValue("l", locale);
                 await clear.ExecuteNonQueryAsync(ct);
             }
-            await using var ver = new NpgsqlCommand(
+            // 불변 스냅샷(로케일별 행, 공유 version·effective_date)
+            await using (var ver = new NpgsqlCommand(
                 """
                 insert into public.legal_versions (type, locale, content, version, is_current, effective_date, published_by)
                 values (@t, @l, @c, @v, true, coalesce(@eff, current_date), @by)
-                """, conn, tx);
-            ver.Parameters.AddWithValue("t", type);
-            ver.Parameters.AddWithValue("l", locale);
-            ver.Parameters.AddWithValue("c", content);
-            ver.Parameters.AddWithValue("v", (object?)(string.IsNullOrWhiteSpace(version) ? null : version.Trim()) ?? DBNull.Value);
-            ver.Parameters.AddWithValue("eff", (object?)effectiveDate ?? DBNull.Value);
-            ver.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
-            await ver.ExecuteNonQueryAsync(ct);
+                """, conn, tx))
+            {
+                ver.Parameters.AddWithValue("t", type);
+                ver.Parameters.AddWithValue("l", locale);
+                ver.Parameters.AddWithValue("c", content);
+                ver.Parameters.AddWithValue("v", version.Trim());
+                ver.Parameters.AddWithValue("eff", (object?)effectiveDate ?? DBNull.Value);
+                ver.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
+                await ver.ExecuteNonQueryAsync(ct);
+            }
         }
 
         await tx.CommitAsync(ct);
-        await LogAsync(conn, actor, published ? "legal.publish" : "legal.save", $"{type}/{locale}", null, ct);
+        await LogAsync(conn, actor, "legal.publish", $"{type}/{version}", null, ct);
     }
 
-    // 게시 버전 이력(최신순).
-    public async Task<List<LegalVersionRow>> ListLegalVersionsAsync(string type, string locale, CancellationToken ct = default)
+    // 릴리스 이력(버전 단위, 최신순). 한 릴리스 = 같은 version 의 여러 로케일 스냅샷.
+    public async Task<List<LegalReleaseRow>> ListLegalReleasesAsync(string type, CancellationToken ct = default)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select id, version, published_at, is_current, effective_date from public.legal_versions where type = @t and locale = @l order by published_at desc limit 50", conn);
+            """
+            select version,
+                   max(effective_date) as effective_date,
+                   max(published_at)   as published_at,
+                   bool_or(is_current) as is_current,
+                   array_agg(distinct locale order by locale) as locales
+            from public.legal_versions
+            where type = @t and version is not null
+            group by version
+            order by max(published_at) desc
+            limit 50
+            """, conn);
         cmd.Parameters.AddWithValue("t", type);
-        cmd.Parameters.AddWithValue("l", locale);
-        var list = new List<LegalVersionRow>();
+        var list = new List<LegalReleaseRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
-            list.Add(new LegalVersionRow(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetFieldValue<DateTimeOffset>(2), r.GetBoolean(3),
-                r.IsDBNull(4) ? null : r.GetFieldValue<DateOnly>(4)));
+            list.Add(new LegalReleaseRow(
+                r.GetString(0),
+                r.IsDBNull(1) ? null : r.GetFieldValue<DateOnly>(1),
+                r.GetFieldValue<DateTimeOffset>(2),
+                r.GetBoolean(3),
+                r.GetFieldValue<string[]>(4)));
         return list;
     }
 
-    // 특정 버전 원문(롤백·보기용).
-    // 과거 버전 내용 불러오기(롤백 의도). 감사 로그 남김(NON-103) — 실제 공개 반영은 재게시(legal.publish).
-    public async Task<string?> GetLegalVersionContentAsync(Guid versionId, Actor actor, CancellationToken ct = default)
+    // 특정 릴리스(버전)의 로케일별 원문. 보기·복원용(감사 로그 남김, NON-103).
+    public async Task<Dictionary<string, string>> GetLegalReleaseContentsAsync(string type, string version, Actor actor, CancellationToken ct = default)
     {
-        if (!Configured) return null;
+        var dict = new Dictionary<string, string>();
+        if (!Configured) return dict;
         await using var conn = await OpenAsync(ct);
-        string? content;
-        await using (var cmd = new NpgsqlCommand("select content from public.legal_versions where id = @id", conn))
+        await using (var cmd = new NpgsqlCommand(
+            "select locale, content from public.legal_versions where type = @t and version = @v", conn))
         {
-            cmd.Parameters.AddWithValue("id", versionId);
-            content = await cmd.ExecuteScalarAsync(ct) as string;
+            cmd.Parameters.AddWithValue("t", type);
+            cmd.Parameters.AddWithValue("v", version);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                dict[r.GetString(0)] = r.GetString(1);
         }
-        if (content is not null)
-            await LogAsync(conn, actor, "legal.version_load", versionId.ToString(), null, ct);
-        return content;
+        if (dict.Count > 0)
+            await LogAsync(conn, actor, "legal.version_load", $"{type}/{version}", null, ct);
+        return dict;
     }
 
     // ── FAQ (NON-73) ──

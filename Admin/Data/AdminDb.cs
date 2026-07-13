@@ -308,7 +308,7 @@ public sealed partial class AdminDb(IConfiguration config)
 public sealed record FaqRow(Guid Id, string Category, string Question, string Answer, int SortOrder, bool Published, DateTimeOffset UpdatedAt);
 public sealed record InquiryRow(Guid Id, string Category, string Email, string Title, string Content, bool Handled, DateTimeOffset CreatedAt);
 public sealed record LegalDocRow(string Type, string Locale, bool Published, DateTimeOffset UpdatedAt);
-public sealed record LegalVersionRow(Guid Id, string? Version, DateTimeOffset PublishedAt, bool IsCurrent, DateOnly? EffectiveDate);
+public sealed record LegalReleaseRow(string Version, DateOnly? EffectiveDate, DateTimeOffset PublishedAt, bool IsCurrent, string[] Locales);
 
 public sealed record ReportRow(
     Guid Id, string Reporter, string TargetType, string TargetId, string Reason, string? Detail,

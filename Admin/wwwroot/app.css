@@ -144,6 +144,26 @@ tr:hover .row-actions, .row-actions:focus-within {
     box-shadow: 0 0 0 1px rgba(109, 40, 217, 0.3), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
+/* 약관 편집기 언어 세그먼트 상태 점 */
+.lg-loclabel {
+    font-size: 0.78rem;
+    color: #8b8da0;
+    align-self: center;
+}
+
+.legal-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+}
+
+    .legal-dot.dot-pub { background: #1d9e75; }
+    .legal-dot.dot-draft { background: #888780; }
+    .legal-dot.dot-empty { background: #3a3c4e; }
+
 /* 긴 목록: 스크롤 컨테이너 + 스티키 헤더 */
 .table-scroll {
     max-height: 68vh;
