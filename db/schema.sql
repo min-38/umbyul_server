@@ -206,6 +206,8 @@ create table if not exists public.legal_documents (
     locale     text not null,
     content    text not null default '',
     published  boolean not null default false,
+    version        text,                             -- 초안에 임시 저장하는 버전 라벨(게시 시 legal_versions로 확정)
+    effective_date date,                             -- 초안에 임시 저장하는 시행일
     updated_at timestamptz not null default now(),
     updated_by uuid,                                 -- 0075 FK
     unique (type, locale),

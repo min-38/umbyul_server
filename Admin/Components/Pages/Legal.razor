@@ -166,15 +166,29 @@ else
     {
         await LoadAsync(async () =>
         {
+            string? draftVersion = null;
+            DateOnly? draftEff = null;
             foreach (var l in Locales)
             {
                 var doc = await Db.GetLegalDocAsync(type, l);
-                content[l] = doc?.Content ?? "";
-                published[l] = doc?.Published ?? false;
+                if (doc is { } d)
+                {
+                    content[l] = d.Content;
+                    published[l] = d.Published;
+                    // 초안 임시 버전·시행일: 먼저 발견된 값 채택(로케일 공유 값이라 EN 우선 순회)
+                    if (draftVersion is null && !string.IsNullOrWhiteSpace(d.Version)) draftVersion = d.Version;
+                    draftEff ??= d.EffectiveDate;
+                }
+                else
+                {
+                    content[l] = "";
+                    published[l] = false;
+                }
             }
             releases = await Db.ListLegalReleasesAsync(type);
-            version = releases.Count > 0 ? releases[0].Version : "";
-            effectiveDate = null;
+            // 초안에 임시 저장된 값 우선, 없으면 최신 릴리스 버전 프리필
+            version = draftVersion ?? (releases.Count > 0 ? releases[0].Version : "");
+            effectiveDate = draftEff;
             tab = "edit";
         });
     }
@@ -183,9 +197,9 @@ else
     {
         await RunAsync(async () =>
         {
-            await Db.SaveLegalDraftAsync(type, locale, CurrentContent, await CurrentActor());
+            await Db.SaveLegalDraftAsync(type, locale, CurrentContent, version, effectiveDate, await CurrentActor());
             err = false;
-            msg = $"{LocaleLabel(locale)} 초안 저장됨";
+            msg = $"{LocaleLabel(locale)} 초안 저장됨 (버전·시행일 포함)";
         });
     }
 

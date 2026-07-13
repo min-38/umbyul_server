@@ -19,22 +19,39 @@ public sealed partial class AdminDb
         return list;
     }
 
-    // 편집용: 미게시본 포함 원문·게시여부. 없으면 null.
-    public async Task<(string Content, bool Published)?> GetLegalDocAsync(string type, string locale, CancellationToken ct = default)
+    // 편집용: 미게시본 포함 원문·게시여부 + 초안에 임시 저장된 버전·시행일. 없으면 null.
+    // version/effective_date 컬럼이 아직 없는(마이그레이션 전) DB에선 그 둘을 null로 폴백(NON: graceful degrade).
+    public async Task<(string Content, bool Published, string? Version, DateOnly? EffectiveDate)?> GetLegalDocAsync(string type, string locale, CancellationToken ct = default)
     {
         if (!Configured) return null;
         await using var conn = await OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "select content, published from public.legal_documents where type = @t and locale = @l", conn);
-        cmd.Parameters.AddWithValue("t", type);
-        cmd.Parameters.AddWithValue("l", locale);
-        await using var r = await cmd.ExecuteReaderAsync(ct);
-        if (!await r.ReadAsync(ct)) return null;
-        return (r.GetString(0), r.GetBoolean(1));
+        try
+        {
+            await using var cmd = new NpgsqlCommand(
+                "select content, published, version, effective_date from public.legal_documents where type = @t and locale = @l", conn);
+            cmd.Parameters.AddWithValue("t", type);
+            cmd.Parameters.AddWithValue("l", locale);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) return null;
+            return (r.GetString(0), r.GetBoolean(1),
+                    r.IsDBNull(2) ? null : r.GetString(2),
+                    r.IsDBNull(3) ? null : r.GetFieldValue<DateOnly>(3));
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42703")
+        {
+            await using var cmd = new NpgsqlCommand(
+                "select content, published from public.legal_documents where type = @t and locale = @l", conn);
+            cmd.Parameters.AddWithValue("t", type);
+            cmd.Parameters.AddWithValue("l", locale);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) return null;
+            return (r.GetString(0), r.GetBoolean(1), null, null);
+        }
     }
 
-    // 초안 저장(단일 로케일 content 만). 게시 상태·버전·시행일은 건드리지 않음 — 게시는 릴리스(다국어 원자)로만.
-    public async Task SaveLegalDraftAsync(string type, string locale, string content, Actor actor, CancellationToken ct = default)
+    // 초안 저장(단일 로케일 content + 임시 버전·시행일). 게시 상태는 건드리지 않음 — 게시는 릴리스(다국어 원자)로만.
+    // 버전·시행일은 초안 편의용 임시값(게시 시 legal_versions로 확정). 컬럼 미적용 DB에선 best-effort로 무시.
+    public async Task SaveLegalDraftAsync(string type, string locale, string content, string? version, DateOnly? effectiveDate, Actor actor, CancellationToken ct = default)
     {
         if (!Configured) return;
         await using var conn = await OpenAsync(ct);
@@ -52,6 +69,19 @@ public sealed partial class AdminDb
             cmd.Parameters.AddWithValue("by", (object?)actor.Id ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync(ct);
         }
+        // 버전·시행일 임시 저장(best-effort — 컬럼 미적용 시 무시).
+        try
+        {
+            await using var meta = new NpgsqlCommand(
+                "update public.legal_documents set version = @v, effective_date = @eff where type = @t and locale = @l", conn);
+            meta.Parameters.AddWithValue("t", type);
+            meta.Parameters.AddWithValue("l", locale);
+            meta.Parameters.AddWithValue("v", (object?)(string.IsNullOrWhiteSpace(version) ? null : version.Trim()) ?? DBNull.Value);
+            meta.Parameters.AddWithValue("eff", (object?)effectiveDate ?? DBNull.Value);
+            await meta.ExecuteNonQueryAsync(ct);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42703") { /* version/effective_date 컬럼 미적용 — 무시 */ }
+
         await LogAsync(conn, actor, "legal.save", $"{type}/{locale}", null, ct);
     }
 
