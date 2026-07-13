@@ -60,8 +60,39 @@ a, .btn-link {
     padding: 0.6rem 0.75rem;
 }
 
-.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
-  box-shadow: 0 0 0 0.1rem white, 0 0 0 0.25rem #258cfb;
+/* ── CRUD 공통 폴리시: 테이블 헤더·호버·다크 인풋 (전 페이지 공유) ── */
+.table thead th {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #9296ab;
+    border-bottom: 1px solid #2e3044;
+    white-space: nowrap;
+}
+
+.table {
+    --bs-table-hover-bg: rgba(139, 92, 246, 0.08); /* 브랜드 바이올렛 은은한 호버 */
+}
+
+.form-control, .form-select {
+    background-color: #0f1019;
+    border-color: #2c2e40;
+}
+
+    .form-control:focus, .form-select:focus {
+        background-color: #0f1019;
+        border-color: #6d28d9;
+    }
+
+.input-group-text {
+    background-color: #1c1d2b;
+    border-color: #2c2e40;
+    color: #9296ab;
+}
+
+.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-select:focus, .form-check-input:focus {
+    box-shadow: 0 0 0 0.2rem rgba(139, 92, 246, 0.35);
 }
 
 .content {

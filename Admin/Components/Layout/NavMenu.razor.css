@@ -68,38 +68,84 @@
 }
 
 .nav-item {
-    font-size: 0.9rem;
-    padding-bottom: 0.5rem;
+    font-size: 0.875rem;
+    padding-bottom: 0.25rem;
 }
 
-    .nav-item:first-of-type {
-        padding-top: 1rem;
-    }
-
-    .nav-item:last-of-type {
-        padding-bottom: 1rem;
-    }
+nav > .nav-item:first-of-type {
+    padding-top: 1rem;
+    padding-bottom: 0.35rem;
+}
 
     .nav-item ::deep .nav-link {
-        color: #d7d7d7;
+        color: #c6c8d4;
         background: none;
         border: none;
-        border-radius: 4px;
-        height: 3rem;
+        border-radius: 6px;
+        height: 2.4rem;
         display: flex;
         align-items: center;
-        line-height: 3rem;
+        line-height: 2.4rem;
         width: 100%;
+        padding: 0 0.75rem;
     }
 
 .nav-item ::deep a.active {
-    background-color: rgba(255,255,255,0.37);
-    color: white;
+    background-color: rgba(139, 92, 246, 0.28);
+    color: #fff;
 }
 
 .nav-item ::deep .nav-link:hover {
-    background-color: rgba(255,255,255,0.1);
-    color: white;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #fff;
+}
+
+/* ── 접이식 그룹(NavMenu <details>) ── */
+.nav-group {
+    margin: 0.15rem 0;
+}
+
+    .nav-group > summary {
+        list-style: none;
+        cursor: pointer;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        padding: 0.45rem 1.6rem 0.45rem 1.75rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #8b8da0;
+    }
+
+        .nav-group > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .nav-group > summary:hover {
+            color: #d7d7e2;
+        }
+
+        /* chevron — open 시 회전 */
+        .nav-group > summary::after {
+            content: "";
+            margin-left: auto;
+            width: 0.55rem;
+            height: 0.55rem;
+            border-right: 1.5px solid currentColor;
+            border-bottom: 1.5px solid currentColor;
+            transform: rotate(-45deg);
+            transition: transform 0.15s ease;
+        }
+
+.nav-group[open] > summary::after {
+    transform: rotate(45deg);
+}
+
+.nav-group .nav-item ::deep .nav-link {
+    font-size: 0.855rem;
+    padding-left: 1.1rem;
 }
 
 /* 모바일에서만 토글로 열고 닫음. (데스크톱은 아래 미디어쿼리에서 항상 flex —

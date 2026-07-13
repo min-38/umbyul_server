@@ -9,7 +9,11 @@ main {
 }
 
 .sidebar {
-    background-image: linear-gradient(180deg, #1e1b4b 0%, #3b0764 55%, #4a044e 100%);
+    /* 본문(#0e0f17)과 톤을 맞춘 다크 + 상단 바이올렛 헤일로만 은은하게 */
+    background:
+        radial-gradient(120% 45% at 50% 0%, rgba(109, 40, 217, 0.22), transparent 65%),
+        #12131d;
+    border-right: 1px solid #232433;
 }
 
 @media (min-width: 641px) {
