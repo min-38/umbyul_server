@@ -1,5 +1,5 @@
 -- schema.sql
--- Glitter (music rating service) — 최종 상태 통합 스키마.
+-- UmByul (music rating service) — 최종 상태 통합 스키마.
 -- server/db/0001..0081 마이그레이션을 하나로 접어 fresh Supabase Postgres 에서 재현.
 -- 원본 스타일 유지: 한국어 주석, `if not exists`. NOT VALID 로 추가됐던 제약은
 -- 신규 DB(데이터 없음)에서는 그냥 유효한 인라인 CHECK/FK 로 접음(아래 CONSOLIDATION NOTES 참고).

@@ -89,7 +89,7 @@ else
                             <div class="fw-semibold mb-1">@q.Title</div>
                             <div style="white-space:pre-wrap">@q.Content</div>
                             <div class="mt-2 d-flex gap-2">
-                                <a class="btn btn-sm btn-outline-primary" href="mailto:@q.Email?subject=@(Uri.EscapeDataString("[Glitter] Re: " + q.Title))">이메일로 답장</a>
+                                <a class="btn btn-sm btn-outline-primary" href="mailto:@q.Email?subject=@(Uri.EscapeDataString("[UmByul] Re: " + q.Title))">이메일로 답장</a>
                                 @* 이메일 삭제 요청 이행 수단(QA9-5). 확인 후 영구 삭제. *@
                                 <button class="btn btn-sm btn-outline-danger ms-auto" @onclick="() => Delete(q.Id)" disabled="@Busy">삭제</button>
                             </div>
