@@ -5,6 +5,17 @@ name: deploy
 on:
   push:
     branches: [main]
+  # 소스 변경이 없어도 특정 서비스를 강제 재배포(예: 컨테이너 이미지가 stale/깨진 경우).
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "재빌드할 서비스(공백 구분: api admin caddy). 비우면 전체."
+        type: string
+        default: "admin"
+      no_cache:
+        description: "캐시 없이 빌드(stale 레이어로 자산 누락되는 문제 방지)"
+        type: boolean
+        default: true
 
 concurrency:
   group: deploy-prod
@@ -18,8 +29,9 @@ jobs:
         with:
           fetch-depth: 2   # paths-filter가 직전 커밋과 diff 뜨는 데 필요
 
-      # 어떤 폴더가 바뀌었는지 판정
+      # 어떤 폴더가 바뀌었는지 판정 (push 일 때만)
       - id: changes
+        if: github.event_name == 'push'
         uses: dorny/paths-filter@v3
         with:
           filters: |
@@ -34,7 +46,10 @@ jobs:
       # 재빌드할 서비스 목록 계산
       - id: services
         run: |
-          if [ "${{ steps.changes.outputs.infra }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            list="${{ inputs.services }}"     # 수동 실행 → 지정 서비스(비우면 전체)
+            [ -z "$list" ] && list="api admin caddy"
+          elif [ "${{ steps.changes.outputs.infra }}" = "true" ]; then
             list="api admin caddy"          # 인프라 변경 → 전체 반영
           else
             list=""
@@ -56,5 +71,9 @@ jobs:
             cd ${{ secrets.OCI_DEPLOY_PATH }}
             git fetch origin main
             git reset --hard origin/main        # .env는 gitignore라 보존됨
+            # 수동 실행 + no_cache 시 캐시 없이 클린 빌드(stale 레이어로 static 자산 누락되는 문제 방지)
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.no_cache }}" = "true" ]; then
+              docker compose build --no-cache ${{ steps.services.outputs.list }}
+            fi
             docker compose up -d --build ${{ steps.services.outputs.list }}
             docker image prune -f               # 이전 이미지 정리(부트볼륨 절약)
