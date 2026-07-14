@@ -39,10 +39,11 @@ else
                         <option value="album">앨범</option>
                     </select>
                     <input class="form-control form-control-sm font-monospace" style="width:280px" placeholder="Spotify ID" @bind="spotifyId" />
-                    <input class="form-control form-control-sm" style="width:220px" placeholder="메모 (선택)" @bind="note" />
+                    <input class="form-control form-control-sm" style="width:200px" placeholder="메모 (선택)" @bind="note" />
+                    <input class="form-control form-control-sm" style="width:260px" placeholder="YouTube URL (선택)" @bind="youtubeUrl" />
                     <button class="btn btn-sm btn-primary" @onclick="Add" disabled="@Busy">큐에 추가</button>
                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => adding = false">닫기</button>
-                    <span class="text-muted small">트랙/앨범 페이지 URL의 마지막 ID를 붙여넣으세요. 큐 맨 뒤에 추가됩니다.</span>
+                    <span class="text-muted small">Spotify ID = 트랙/앨범 URL의 마지막 ID. YouTube URL을 넣으면 그 곡의 전역 링크로 함께 저장됩니다("YouTube 링크" 페이지와 동일).</span>
                 </div>
             </div>
         }
@@ -120,6 +121,7 @@ else
     private string targetType = "track";
     private string spotifyId = "";
     private string note = "";
+    private string youtubeUrl = "";
     private string? notice;
     private bool noticeErr;
 
@@ -140,15 +142,25 @@ else
         targetType = "track";
         spotifyId = "";
         note = "";
+        youtubeUrl = "";
         notice = null;
     }
 
     private async Task Add() => await RunAsync(async () =>
     {
-        var (ok, err) = await Db.AddDailyPickAsync(targetType, spotifyId, note, await CurrentActor());
-        noticeErr = !ok;
-        notice = ok ? "큐에 추가됨" : err;
-        if (ok) { spotifyId = ""; note = ""; await Load(); }
+        var actor = await CurrentActor();
+        var (ok, err) = await Db.AddDailyPickAsync(targetType, spotifyId, note, actor);
+        if (!ok) { noticeErr = true; notice = err; return; }
+        // 편의: YouTube URL 입력 시 이 곡의 전역 링크(target_youtube_links)로 함께 저장(NON-265). 링크 실패는 픽 추가를 무르지 않음.
+        if (!string.IsNullOrWhiteSpace(youtubeUrl))
+        {
+            var (ytOk, ytErr) = await Db.SaveYoutubeLinkAsync(targetType, spotifyId, youtubeUrl, actor);
+            if (!ytOk) { noticeErr = true; notice = $"큐에 추가됨, YouTube 링크 실패: {ytErr}"; await Load(); return; }
+        }
+        noticeErr = false;
+        notice = "큐에 추가됨";
+        spotifyId = ""; note = ""; youtubeUrl = "";
+        await Load();
     });
 
     private async Task Move(DailyPickAdminRow row, bool up) => await RunAsync(async () =>
