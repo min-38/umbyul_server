@@ -77,20 +77,7 @@ else
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
                     <span class="badge @(published ? "bg-success" : "bg-secondary")">@(published ? "게시됨" : "초안")</span>
-                    <span class="text-muted small">로케일</span>
-                    <select class="form-select form-select-sm" style="width:90px" value="@locale" @onchange="OnLocaleChange">
-                        <option value="ko">ko</option>
-                        <option value="en">en</option>
-                        <option value="ja">ja</option>
-                        <option value="es">es</option>
-                    </select>
-                    <span class="small">
-                        @foreach (var l in AdminDb.RequiredAnnouncementLocales)
-                        {
-                            var okLoc = localeStatus.TryGetValue(l, out var v) && v;
-                            <span class="badge @(okLoc ? "bg-success" : "bg-secondary") me-1" title="@(okLoc ? "완성" : "제목·본문 필요")">@l @(okLoc ? "✓" : "·")</span>
-                        }
-                    </span>
+                    <LocaleTabs Locales="AdminDb.RequiredAnnouncementLocales" Selected="@locale" Status="localeStatus" OnSelect="SelectLocale" Label="로케일" Disabled="@Busy" />
                     @if (published)
                     {
                         <button class="btn btn-sm btn-outline-warning" @onclick="() => TogglePublish(false)" disabled="@Busy">게시 취소</button>
@@ -192,9 +179,9 @@ else
         if (id is { } aid) await LoadAsync(async () => localeStatus = await Db.GetAnnouncementLocaleStatusAsync(aid));
     }
 
-    private async Task OnLocaleChange(ChangeEventArgs e)
+    private async Task SelectLocale(string l)
     {
-        locale = e.Value?.ToString() ?? "ko";
+        locale = l;
         msg = null;
         await LoadLocale();
     }

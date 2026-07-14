@@ -100,20 +100,7 @@ else
                         <option value="in_progress">작업 중</option>
                     </select>
                     <input type="date" class="form-control form-control-sm" style="width:160px" @bind="releasedDate" />
-                    <span class="text-muted small">본문 로케일</span>
-                    <select class="form-select form-select-sm" style="width:90px" value="@locale" @onchange="OnLocaleChange">
-                        <option value="ko">ko</option>
-                        <option value="en">en</option>
-                        <option value="ja">ja</option>
-                        <option value="es">es</option>
-                    </select>
-                    <span class="small">
-                        @foreach (var l in AdminDb.RequiredAnnouncementLocales)
-                        {
-                            var okLoc = localeStatus.TryGetValue(l, out var v) && v;
-                            <span class="badge @(okLoc ? "bg-success" : "bg-secondary") me-1" title="@(okLoc ? "완성" : "본문 필요")">@l @(okLoc ? "✓" : "·")</span>
-                        }
-                    </span>
+                    <LocaleTabs Locales="AdminDb.RequiredAnnouncementLocales" Selected="@locale" Status="localeStatus" OnSelect="SelectLocale" Label="본문 로케일" Disabled="@Busy" />
                 </div>
 
                 <ul class="nav nav-tabs mb-2">
@@ -201,9 +188,9 @@ else
         await LoadStatus();
     }
 
-    private async Task OnLocaleChange(ChangeEventArgs e)
+    private async Task SelectLocale(string l)
     {
-        locale = e.Value?.ToString() ?? "ko";
+        locale = l;
         msg = null;
         await LoadLocale();
     }
