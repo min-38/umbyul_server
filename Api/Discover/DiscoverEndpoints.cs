@@ -414,20 +414,39 @@ public static class DiscoverEndpoints
     private static async Task<(string Type, string SpotifyId, string? Note, DateTimeOffset ExpiresAt)?> ReadActivePickAsync(
         NpgsqlConnection conn, CancellationToken ct)
     {
+        // 롤오버 KST 06:00(NON-269). 큐(지연 소비): 오늘(KST-6h)에 이미 소비된 픽이 있으면 그것,
+        // 없으면 대기 큐(shown_date null, position 순) 맨 앞 하나를 오늘로 찍고 노출. expires_at = (shown_date+1) 06:00 KST.
         try
         {
-            // 롤오버는 KST 06:00(NON-269). 현재 유효 pick_date = (KST now - 6h)의 날짜 →
-            //   D 06:00 ~ (D+1) 06:00 동안 pick_date=D 노출. expires_at = (D+1) 06:00 KST 를 UTC instant 로(카운트다운).
-            await using var cmd = new NpgsqlCommand(
-                "select target_type, target_spotify_id, note, ((pick_date + 1)::timestamp + interval '6 hours') at time zone 'Asia/Seoul' from public.daily_picks where pick_date = (timezone('Asia/Seoul', now()) - interval '6 hours')::date limit 1", conn);
-            await using var r = await cmd.ExecuteReaderAsync(ct);
-            if (!await r.ReadAsync(ct)) return null;
-            return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetFieldValue<DateTimeOffset>(3));
+            var active = await ReadTodayPickAsync(conn, ct);
+            if (active is not null) return active;
+
+            // 오늘 소비된 게 없고 대기 항목이 있을 때만 큐 진행(조건부·원자적 — 동시요청 중복소비 방지).
+            await using (var adv = new NpgsqlCommand(
+                """
+                update public.daily_picks set shown_date = (timezone('Asia/Seoul', now()) - interval '6 hours')::date
+                where id = (select id from public.daily_picks where shown_date is null order by position asc, created_at asc limit 1)
+                  and not exists (select 1 from public.daily_picks where shown_date = (timezone('Asia/Seoul', now()) - interval '6 hours')::date)
+                """, conn))
+            {
+                await adv.ExecuteNonQueryAsync(ct);
+            }
+            return await ReadTodayPickAsync(conn, ct);
         }
-        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+        catch (PostgresException e) when (e.SqlState is PostgresErrorCodes.UndefinedTable or PostgresErrorCodes.UndefinedColumn)
         {
-            return null; // 마이그레이션 0061 전
+            return null; // 마이그레이션(pick_date→position/shown_date) 전
         }
+    }
+
+    private static async Task<(string Type, string SpotifyId, string? Note, DateTimeOffset ExpiresAt)?> ReadTodayPickAsync(
+        NpgsqlConnection conn, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(
+            "select target_type, target_spotify_id, note, ((shown_date + 1)::timestamp + interval '6 hours') at time zone 'Asia/Seoul' from public.daily_picks where shown_date = (timezone('Asia/Seoul', now()) - interval '6 hours')::date limit 1", conn);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        return (r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetFieldValue<DateTimeOffset>(3));
     }
 
     // 픽 대상의 평점 요약 + 대표 장르(합의 ≥ MinConsensusVotes). 오류 시 (null, 0, []).

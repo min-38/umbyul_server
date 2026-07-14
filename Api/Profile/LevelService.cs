@@ -44,7 +44,7 @@ public static class LevelService
               (select count(*) from public.ratings r
                  join public.daily_picks d
                    on d.target_type = r.target_type and d.target_spotify_id = r.target_spotify_id
-                  and d.pick_date = (r.created_at)::date
+                  and d.shown_date = (r.created_at)::date
                  where r.user_id = u.id and r.deleted_at is null)
             from unnest(@ids) as u(id)
             """;

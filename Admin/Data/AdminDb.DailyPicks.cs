@@ -2,85 +2,110 @@ using Npgsql;
 
 namespace Admin.Data;
 
-// 오늘의 음악(NON-154) 큐 관리. 날짜 기반 로테이션 — pick_date <= 오늘 중 최신 1건이 Discover 상단에 노출.
-// 표시 메타(이름/아티스트/커버)는 저장 안 함(Api가 Spotify 상세로 해석). 어드민은 type + spotify_id + note + pick_date만.
-// YouTube 링크는 곡 자체 속성이라 여기가 아니라 '곡 링크' 페이지에서 관리(target_youtube_links).
+// 오늘의 음악(NON-154) 큐. 관리자는 순서(큐)만 관리 — 날짜 지정 없음.
+// 매일 06:00 KST 첫 Discover 노출 시 큐 맨 앞(shown_date null, position 최소)이 그날로 소비됨(지연 소비, Api가 처리).
+// 표시 메타(이름/아티스트/커버)는 저장 안 함(Api가 Spotify 상세로 해석). YouTube 링크는 '곡 링크' 페이지(target_youtube_links).
 public sealed partial class AdminDb
 {
-    public async Task<List<DailyPickAdminRow>> ListDailyPicksAsync(CancellationToken ct = default)
+    // 대기 큐(아직 노출 안 된 것) — position 순.
+    public async Task<List<DailyPickAdminRow>> ListDailyPickQueueAsync(CancellationToken ct = default)
     {
         if (!Configured) return [];
         await using var conn = await OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(
-            "select id, target_type, target_spotify_id, note, pick_date, created_at from public.daily_picks order by pick_date desc", conn);
+            "select id, target_type, target_spotify_id, note, position, shown_date, created_at from public.daily_picks where shown_date is null order by position asc, created_at asc", conn);
+        return await ReadRowsAsync(cmd, ct);
+    }
+
+    // 지난 픽(이미 노출된 것) — 최신순.
+    public async Task<List<DailyPickAdminRow>> ListDailyPickHistoryAsync(int limit = 60, CancellationToken ct = default)
+    {
+        if (!Configured) return [];
+        await using var conn = await OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "select id, target_type, target_spotify_id, note, position, shown_date, created_at from public.daily_picks where shown_date is not null order by shown_date desc limit @lim", conn);
+        cmd.Parameters.AddWithValue("lim", limit);
+        return await ReadRowsAsync(cmd, ct);
+    }
+
+    private static async Task<List<DailyPickAdminRow>> ReadRowsAsync(NpgsqlCommand cmd, CancellationToken ct)
+    {
         var list = new List<DailyPickAdminRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
             list.Add(new DailyPickAdminRow(
                 r.GetGuid(0), r.GetString(1), r.GetString(2),
                 r.IsDBNull(3) ? null : r.GetString(3),
-                r.GetFieldValue<DateOnly>(4),
-                r.GetFieldValue<DateTimeOffset>(5)));
+                r.GetInt32(4),
+                r.IsDBNull(5) ? null : r.GetFieldValue<DateOnly>(5),
+                r.GetFieldValue<DateTimeOffset>(6)));
         return list;
     }
 
-    // 다음 노출일 기본값 = max(pick_date)+1 과 오늘 중 큰 값(과거로 안 쌓이게 = 큐 뒤에 이어붙임).
-    public async Task<DateOnly> NextPickDateAsync(CancellationToken ct = default)
-    {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        if (!Configured) return today;
-        await using var conn = await OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "select greatest(coalesce(max(pick_date) + 1, current_date), current_date) from public.daily_picks", conn);
-        var v = await cmd.ExecuteScalarAsync(ct);
-        return v switch { DateOnly d => d, DateTime dt => DateOnly.FromDateTime(dt), _ => today };
-    }
-
-    public async Task<(bool Ok, string? Error)> CreateDailyPickAsync(string targetType, string spotifyId, string? note, DateOnly pickDate, Actor actor, CancellationToken ct = default)
+    // 큐 맨 뒤에 추가(대기).
+    public async Task<(bool Ok, string? Error)> AddDailyPickAsync(string targetType, string spotifyId, string? note, Actor actor, CancellationToken ct = default)
     {
         if (Validate(ref targetType, ref spotifyId) is { } err) return (false, err);
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
         await using var conn = await OpenAsync(ct);
         Guid newId;
-        try
+        await using (var ins = new NpgsqlCommand(
+            """
+            insert into public.daily_picks (target_type, target_spotify_id, note, position, shown_date)
+            values (@t, @s, @n, (select coalesce(max(position), -1) + 1 from public.daily_picks where shown_date is null), null)
+            returning id
+            """, conn))
         {
-            await using var ins = new NpgsqlCommand(
-                "insert into public.daily_picks (target_type, target_spotify_id, note, pick_date) values (@t, @s, @n, @d) returning id", conn);
             ins.Parameters.AddWithValue("t", targetType);
             ins.Parameters.AddWithValue("s", spotifyId);
             ins.Parameters.AddWithValue("n", NoteParam(note));
-            ins.Parameters.AddWithValue("d", pickDate);
             newId = (Guid)(await ins.ExecuteScalarAsync(ct))!;
         }
-        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
-        {
-            return (false, "그 날짜에 이미 픽이 있습니다.");
-        }
-        await LogAsync(conn, actor, "dailypick.create", newId.ToString(), $"{pickDate:yyyy-MM-dd} · {targetType} {spotifyId}", ct);
+        await LogAsync(conn, actor, "dailypick.add", newId.ToString(), $"{targetType} {spotifyId}", ct);
         return (true, null);
     }
 
-    public async Task<(bool Ok, string? Error)> UpdateDailyPickAsync(Guid id, string targetType, string spotifyId, string? note, DateOnly pickDate, Actor actor, CancellationToken ct = default)
+    // 큐 내 순서 이동 — 인접 대기 항목과 position 교환. 이미 끝이면 무시.
+    public async Task<(bool Ok, string? Error)> MoveDailyPickAsync(Guid id, bool up, Actor actor, CancellationToken ct = default)
     {
-        if (Validate(ref targetType, ref spotifyId) is { } err) return (false, err);
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
         await using var conn = await OpenAsync(ct);
-        try
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        int curPos;
+        await using (var get = new NpgsqlCommand("select position from public.daily_picks where id = @id and shown_date is null", conn, tx))
         {
-            await using var upd = new NpgsqlCommand(
-                "update public.daily_picks set target_type=@t, target_spotify_id=@s, note=@n, pick_date=@d where id=@id", conn);
-            upd.Parameters.AddWithValue("t", targetType);
-            upd.Parameters.AddWithValue("s", spotifyId);
-            upd.Parameters.AddWithValue("n", NoteParam(note));
-            upd.Parameters.AddWithValue("d", pickDate);
-            upd.Parameters.AddWithValue("id", id);
-            if (await upd.ExecuteNonQueryAsync(ct) == 0) return (false, "NOT_FOUND");
+            get.Parameters.AddWithValue("id", id);
+            if (await get.ExecuteScalarAsync(ct) is not int p) return (false, "NOT_FOUND");
+            curPos = p;
         }
-        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
+
+        // 인접 대기 항목(위=position 더 작은 것 중 최대, 아래=더 큰 것 중 최소).
+        Guid neighborId;
+        int neighborPos;
+        var neighborSql = up
+            ? "select id, position from public.daily_picks where shown_date is null and position < @p order by position desc, created_at desc limit 1"
+            : "select id, position from public.daily_picks where shown_date is null and position > @p order by position asc, created_at asc limit 1";
+        await using (var nb = new NpgsqlCommand(neighborSql, conn, tx))
         {
-            return (false, "그 날짜에 이미 픽이 있습니다.");
+            nb.Parameters.AddWithValue("p", curPos);
+            await using var r = await nb.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) { await tx.CommitAsync(ct); return (true, null); } // 이미 끝 — 무시
+            neighborId = r.GetGuid(0);
+            neighborPos = r.GetInt32(1);
         }
-        await LogAsync(conn, actor, "dailypick.update", id.ToString(), $"{pickDate:yyyy-MM-dd} · {targetType} {spotifyId}", ct);
+
+        await using (var swap = new NpgsqlCommand(
+            "update public.daily_picks set position = case id when @a then @pb when @b then @pa end where id in (@a, @b)", conn, tx))
+        {
+            swap.Parameters.AddWithValue("a", id);
+            swap.Parameters.AddWithValue("b", neighborId);
+            swap.Parameters.AddWithValue("pa", curPos);
+            swap.Parameters.AddWithValue("pb", neighborPos);
+            await swap.ExecuteNonQueryAsync(ct);
+        }
+        await tx.CommitAsync(ct);
+        await LogAsync(conn, actor, "dailypick.reorder", id.ToString(), up ? "up" : "down", ct);
         return (true, null);
     }
 
@@ -88,7 +113,7 @@ public sealed partial class AdminDb
     {
         if (!Configured) return (false, "DB_NOT_CONFIGURED");
         await using var conn = await OpenAsync(ct);
-        await using var del = new NpgsqlCommand("delete from public.daily_picks where id=@id", conn);
+        await using var del = new NpgsqlCommand("delete from public.daily_picks where id = @id", conn);
         del.Parameters.AddWithValue("id", id);
         if (await del.ExecuteNonQueryAsync(ct) == 0) return (false, "NOT_FOUND");
         await LogAsync(conn, actor, "dailypick.delete", id.ToString(), null, ct);
@@ -108,4 +133,4 @@ public sealed partial class AdminDb
     }
 }
 
-public sealed record DailyPickAdminRow(Guid Id, string TargetType, string SpotifyId, string? Note, DateOnly PickDate, DateTimeOffset CreatedAt);
+public sealed record DailyPickAdminRow(Guid Id, string TargetType, string SpotifyId, string? Note, int Position, DateOnly? ShownDate, DateTimeOffset CreatedAt);

@@ -11,17 +11,11 @@
 
 <div class="page-header">
     <h1>오늘의 음악</h1>
-    <p class="subtitle">Discover 상단 데일리 픽 큐. 노출일(pick_date) 기준으로 하루 1개씩 자동 노출 — 전날 공백이어도 최신 픽이 뜹니다. Spotify ID만 넣으면 이름·커버는 자동 표시됩니다.</p>
+    <p class="subtitle">Discover 상단 데일리 픽 큐입니다. 순서대로 등록만 해두면 매일 오전 6시(KST)에 큐 맨 위 곡이 자동으로 노출돼요. 날짜 지정은 필요 없습니다. Spotify ID만 넣으면 이름·커버는 자동 표시됩니다.</p>
 </div>
 
-@if (Error is not null)
-{
-    <div class="alert alert-danger py-2">@Error</div>
-}
-@if (notice is not null)
-{
-    <div class="alert @(noticeErr ? "alert-danger" : "alert-success") py-2">@notice</div>
-}
+@if (Error is not null) { <div class="alert alert-danger py-2">@Error</div> }
+@if (notice is not null) { <div class="alert @(noticeErr ? "alert-danger" : "alert-success") py-2">@notice</div> }
 
 @if (!Db.Configured)
 {
@@ -29,32 +23,56 @@
 }
 else
 {
+    @* 대기 큐 *@
     <div class="card mb-4">
         <div class="card-toolbar">
-            <span class="toolbar-count">@(picks.Count)개 픽</span>
-            <button class="btn btn-sm btn-primary ms-auto" @onclick="NewItem">+ 새 픽</button>
+            <span class="toolbar-count">대기 큐 @(queue.Count)곡</span>
+            <button class="btn btn-sm btn-primary ms-auto" @onclick="ToggleAdd">+ 새 픽</button>
         </div>
+
+        @if (adding)
+        {
+            <div class="card-body border-bottom">
+                <div class="d-flex flex-wrap gap-2 align-items-center">
+                    <select class="form-select form-select-sm" style="width:auto" @bind="targetType">
+                        <option value="track">곡</option>
+                        <option value="album">앨범</option>
+                    </select>
+                    <input class="form-control form-control-sm font-monospace" style="width:280px" placeholder="Spotify ID" @bind="spotifyId" />
+                    <input class="form-control form-control-sm" style="width:220px" placeholder="메모 (선택)" @bind="note" />
+                    <button class="btn btn-sm btn-primary" @onclick="Add" disabled="@Busy">큐에 추가</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => adding = false">닫기</button>
+                    <span class="text-muted small">트랙/앨범 페이지 URL의 마지막 ID를 붙여넣으세요. 큐 맨 뒤에 추가됩니다.</span>
+                </div>
+            </div>
+        }
+
         <table class="table table-sm table-hover align-middle mb-0">
-            <thead><tr><th style="width:8rem">노출일</th><th style="width:5rem">종류</th><th>Spotify ID</th><th>메모</th><th style="width:4rem"></th></tr></thead>
+            <thead><tr><th style="width:7rem">순서</th><th style="width:5rem">종류</th><th>Spotify ID</th><th>메모</th><th style="width:5rem"></th></tr></thead>
             <tbody>
-                @if (picks.Count == 0)
+                @if (queue.Count == 0)
                 {
-                    <tr><td colspan="5" class="empty-state"><span class="empty-icon">☆</span>픽이 없습니다. 우측 상단 "+ 새 픽"으로 추가하세요.</td></tr>
+                    <tr><td colspan="5" class="empty-state"><span class="empty-icon">☆</span>대기 중인 픽이 없습니다. "+ 새 픽"으로 큐에 추가하세요.</td></tr>
                 }
                 else
                 {
-                    @foreach (var row in picks)
+                    @for (int i = 0; i < queue.Count; i++)
                     {
-                        <tr class="@(editing && row.Id == id ? "table-active" : "")" style="cursor:pointer" @onclick="() => Edit(row)">
-                            <td class="@(row.PickDate <= Today ? "fw-semibold" : "text-muted")">
-                                @row.PickDate.ToString("yyyy-MM-dd")
-                                @if (row.PickDate == ActiveDate) { <span class="badge bg-success ms-1">노출 중</span> }
+                        var row = queue[i];
+                        var idx = i;
+                        <tr>
+                            <td class="text-muted">
+                                @(idx + 1)
+                                <span class="ms-1">
+                                    <button class="btn btn-link btn-sm p-0 me-1" @onclick="() => Move(row, true)" disabled="@(Busy || idx == 0)" title="위로">↑</button>
+                                    <button class="btn btn-link btn-sm p-0" @onclick="() => Move(row, false)" disabled="@(Busy || idx == queue.Count - 1)" title="아래로">↓</button>
+                                </span>
                             </td>
                             <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
                             <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.SpotifyId</td>
                             <td class="text-muted small text-truncate" style="max-width:18rem">@(row.Note ?? "—")</td>
                             <td class="text-end row-actions">
-                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" @onclick:stopPropagation disabled="@Busy">삭제</button>
+                                <button class="btn btn-link btn-sm p-0 text-danger" @onclick="() => Delete(row)" disabled="@Busy">삭제</button>
                             </td>
                         </tr>
                     }
@@ -63,130 +81,94 @@ else
         </table>
     </div>
 
-    @if (editing)
-    {
-        <div class="card edit-card">
-            <div class="card-body">
-                <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
-                    <span class="badge @(id is null ? "bg-primary" : "bg-secondary")">@(id is null ? "새 픽" : "편집")</span>
-                    <span class="input-group input-group-sm" style="width:auto">
-                        <span class="input-group-text">종류</span>
-                        <select class="form-select form-select-sm" style="width:auto" @bind="targetType">
-                            <option value="track">곡</option>
-                            <option value="album">앨범</option>
-                        </select>
-                    </span>
-                    <input class="form-control form-control-sm font-monospace" style="width:280px" placeholder="Spotify ID" @bind="spotifyId" />
-                    <span class="input-group input-group-sm" style="width:auto">
-                        <span class="input-group-text">노출일</span>
-                        <input type="date" class="form-control form-control-sm" style="width:auto" @bind="pickDate" />
-                    </span>
-                    <button class="btn btn-sm btn-outline-secondary ms-auto" @onclick="CloseEditor">닫기</button>
-                </div>
-                <textarea class="form-control form-control-sm mb-3" rows="2" placeholder="메모 (선택 · 운영자 코멘트, 카드엔 표시 안 됨)" @bind="note"></textarea>
-                <input class="form-control form-control-sm mb-1" placeholder="YouTube URL (선택 · 카드에 YouTube 아이콘 표시)" @bind="youtubeUrl" />
-                <p class="text-muted small mb-3">리뷰가 없는 곡도 카드/상세에 표시됩니다(spotify_id 매칭). 같은 곡의 다른 에디션까지 공유하려면 리뷰된 음악 목록에서 넣으세요.</p>
-                <div class="d-flex align-items-center gap-2">
-                    <button class="btn btn-sm btn-primary" @onclick="Save" disabled="@Busy">저장</button>
-                    @if (msg is not null)
-                    {
-                        <span class="small @(err ? "text-danger" : "text-success")">@msg</span>
-                    }
-                    <span class="text-muted small">트랙/앨범 페이지 URL의 마지막 ID를 붙여넣으세요.</span>
-                </div>
-            </div>
+    @* 지난 픽(노출 이력) *@
+    <div class="card">
+        <div class="card-toolbar">
+            <span class="toolbar-count">지난 픽 @(history.Count)곡</span>
         </div>
-    }
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead><tr><th style="width:9rem">노출일</th><th style="width:5rem">종류</th><th>Spotify ID</th><th>메모</th></tr></thead>
+            <tbody>
+                @if (history.Count == 0)
+                {
+                    <tr><td colspan="4" class="empty-state"><span class="empty-icon">♪</span>아직 노출된 픽이 없습니다.</td></tr>
+                }
+                else
+                {
+                    @foreach (var row in history)
+                    {
+                        <tr>
+                            <td class="@(row.ShownDate == Today ? "fw-semibold" : "text-muted")">
+                                @(row.ShownDate?.ToString("yyyy-MM-dd") ?? "—")
+                                @if (row.ShownDate == Today) { <span class="badge bg-success ms-1">노출 중</span> }
+                            </td>
+                            <td class="text-muted">@(row.TargetType == "album" ? "앨범" : "곡")</td>
+                            <td class="text-muted small font-monospace text-truncate" style="max-width:16rem">@row.SpotifyId</td>
+                            <td class="text-muted small text-truncate" style="max-width:18rem">@(row.Note ?? "—")</td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
 }
 
 @code {
-    private List<DailyPickAdminRow> picks = [];
-    private bool editing;
-    private Guid? id;
+    private List<DailyPickAdminRow> queue = [];
+    private List<DailyPickAdminRow> history = [];
+    private bool adding;
     private string targetType = "track";
     private string spotifyId = "";
     private string note = "";
-    private string youtubeUrl = "";
-    private DateOnly pickDate;
-    private string? msg;
-    private bool err;
     private string? notice;
     private bool noticeErr;
 
-    private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
-    // 현재 노출 중인 픽의 날짜 = pick_date <= 오늘 중 최신.
-    private DateOnly? ActiveDate => picks.Where(p => p.PickDate <= Today).Max(p => (DateOnly?)p.PickDate);
+    // 현재 노출 판정용 오늘 = KST 06:00 롤오버 기준 = (KST now - 6h) = UTC + 3h 의 날짜.
+    private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3));
 
     protected override async Task OnInitializedAsync() => await Load();
 
-    private async Task Load() => await LoadAsync(async () => picks = await Db.ListDailyPicksAsync());
-
-    private async Task NewItem()
+    private async Task Load() => await LoadAsync(async () =>
     {
-        editing = true;
-        id = null;
+        queue = await Db.ListDailyPickQueueAsync();
+        history = await Db.ListDailyPickHistoryAsync();
+    });
+
+    private void ToggleAdd()
+    {
+        adding = !adding;
         targetType = "track";
         spotifyId = "";
         note = "";
-        youtubeUrl = "";
-        // 순단 시 서킷 사망 대신 오늘로 폴백(픽 없을 때의 기본값과 동일, NON-218).
-        try { pickDate = await Db.NextPickDateAsync(); }
-        catch (Exception) { pickDate = DateOnly.FromDateTime(DateTime.UtcNow); }
-        msg = null;
+        notice = null;
     }
 
-    private async Task Edit(DailyPickAdminRow row)
+    private async Task Add() => await RunAsync(async () =>
     {
-        editing = true;
-        id = row.Id;
-        targetType = row.TargetType;
-        spotifyId = row.SpotifyId;
-        note = row.Note ?? "";
-        pickDate = row.PickDate;
-        msg = null;
-        // 기존 YouTube 링크 프리필(NON-265). 실패해도 편집은 계속.
-        try { youtubeUrl = await Db.GetYoutubeUrlForTargetAsync(row.TargetType, row.SpotifyId) ?? ""; }
-        catch (Exception) { youtubeUrl = ""; }
-    }
+        var (ok, err) = await Db.AddDailyPickAsync(targetType, spotifyId, note, await CurrentActor());
+        noticeErr = !ok;
+        notice = ok ? "큐에 추가됨" : err;
+        if (ok) { spotifyId = ""; note = ""; await Load(); }
+    });
 
-    private void CloseEditor() { editing = false; msg = null; }
-
-    private async Task Save()
+    private async Task Move(DailyPickAdminRow row, bool up) => await RunAsync(async () =>
     {
-        if (string.IsNullOrWhiteSpace(spotifyId)) { err = true; msg = "Spotify ID를 입력하세요."; return; }
-        await RunAsync(async () =>
-        {
-            var actor = await CurrentActor();
-            var (ok, error) = id is { } eid
-                ? await Db.UpdateDailyPickAsync(eid, targetType, spotifyId, note, pickDate, actor)
-                : await Db.CreateDailyPickAsync(targetType, spotifyId, note, pickDate, actor);
-            if (!ok) { err = true; msg = error ?? "저장하지 못했습니다."; return; }
-            // 픽 저장 성공 후 YouTube 링크도 함께 저장(선택, NON-265). 링크 실패는 픽 저장을 무르지 않음.
-            if (!string.IsNullOrWhiteSpace(youtubeUrl))
-            {
-                var (ytOk, ytErr) = await Db.SaveYoutubeLinkAsync(targetType, spotifyId, youtubeUrl, actor);
-                if (!ytOk) { err = true; msg = $"픽은 저장됨, YouTube 링크 실패: {ytErr}"; picks = await Db.ListDailyPicksAsync(); return; }
-            }
-            err = false; msg = "저장됨";
-            notice = null;
-            picks = await Db.ListDailyPicksAsync();
-            if (id is null) editing = false;
-        });
-    }
+        var (ok, err) = await Db.MoveDailyPickAsync(row.Id, up, await CurrentActor());
+        if (!ok) { noticeErr = true; notice = err; return; }
+        await Load();
+    });
 
     private Task Delete(DailyPickAdminRow row) => RunAsync(async () =>
     {
-        var (ok, error) = await Db.DeleteDailyPickAsync(row.Id, await CurrentActor());
-        if (!ok) { noticeErr = true; notice = error; return; }
-        noticeErr = false; notice = $"{row.PickDate:yyyy-MM-dd} 픽 삭제됨";
-        if (id == row.Id) editing = false;
-        picks = await Db.ListDailyPicksAsync();
-    }, confirm: $"{row.PickDate:yyyy-MM-dd} 픽을 삭제할까요?");
+        await Db.DeleteDailyPickAsync(row.Id, await CurrentActor());
+        noticeErr = false; notice = "삭제됨";
+        await Load();
+    }, confirm: "이 픽을 삭제할까요?");
 
     private async Task<Actor> CurrentActor()
     {
         var user = (await AuthState.GetAuthenticationStateAsync()).User;
-        Guid? uid = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
-        return new Actor(uid, user.Identity?.Name ?? "?");
+        Guid? id = Guid.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var g) ? g : null;
+        return new Actor(id, user.Identity?.Name ?? "?");
     }
 }

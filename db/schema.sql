@@ -398,7 +398,8 @@ create table if not exists public.daily_picks (
     target_type       text not null check (target_type in ('track', 'album')),
     target_spotify_id text not null,
     note              text,
-    pick_date         date not null unique,
+    position          int  not null default 0,   -- 대기 큐 순서(미노출 항목 정렬). 관리자가 순서만 관리.
+    shown_date        date unique,                -- 노출된 KST 날짜(null=대기 중). 매일 06:00 KST 첫 노출 시 큐 맨 앞이 그날로 소비(지연 소비).
     created_at        timestamptz not null default now()
 );
 

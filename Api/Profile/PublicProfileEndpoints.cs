@@ -200,7 +200,7 @@ public static class PublicProfileEndpoints
         catch (NpgsqlException) { return (0, 0); }
     }
 
-    // '픽 당일' 리뷰 수(NON-153) — 리뷰 작성일이 그 대상의 daily_picks.pick_date 와 같은 것만.
+    // '픽 당일' 리뷰 수(NON-153) — 리뷰 작성일이 그 대상의 daily_picks.shown_date(노출된 날) 와 같은 것만.
     // daily_picks 미존재(0061 미적용) 등 실패 시 0.
     private static async Task<int> LoadDailyPickReviewsAsync(NpgsqlConnection conn, Guid uid, CancellationToken ct)
     {
@@ -213,7 +213,7 @@ public static class PublicProfileEndpoints
                 join public.daily_picks dp
                   on dp.target_type = r.target_type
                  and dp.target_spotify_id = r.target_spotify_id
-                 and dp.pick_date = (r.created_at)::date
+                 and dp.shown_date = (r.created_at)::date
                 where r.user_id = @uid and r.deleted_at is null
                 """, conn);
             cmd.Parameters.AddWithValue("uid", uid);
