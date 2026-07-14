@@ -1,4 +1,4 @@
-# UmByul 서버 배포 (OCI A1, 춘천). Api + Admin(Blazor Server) + Caddy(자동 TLS 리버스 프록시).
+# UmByul 서버 배포 (OCI A1, 춘천). Api + Caddy(자동 TLS 리버스 프록시). Admin은 로컬 전용(배포 제외).
 # 비밀값은 .env(미커밋)에서 주입. 고정 도메인/프록시 값만 여기.
 services:
   api:
@@ -11,20 +11,6 @@ services:
       Cors__AllowedOrigins__0: "https://umbyul.com"
       Cors__AllowedOrigins__1: "https://www.umbyul.com"
       ForwardedHeaders__KnownProxies__0: "172.28.0.2"   # caddy 고정 IP(레이트리밋용 실제 클라 IP 복원)
-    networks:
-      web:
-
-  admin:
-    build: ./Admin
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      ASPNETCORE_HTTP_PORTS: "8080"
-      API__URL: "http://api:8080"                        # 내부망으로 Api 호출(이미지 업로드)
-      DataProtection__KeyPath: "/keys"                    # 재시작해도 로그인/antiforgery 유지
-      ForwardedHeaders__KnownProxies__0: "172.28.0.2"
-    volumes:
-      - admin-keys:/keys
     networks:
       web:
 
@@ -48,9 +34,8 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
-          ip_range: 172.28.5.0/24   # 동적 IP(api/admin)는 여기서만 할당 → caddy 고정 172.28.0.2와 충돌 방지
+          ip_range: 172.28.5.0/24   # 동적 IP(api)는 여기서만 할당 → caddy 고정 172.28.0.2와 충돌 방지
 
 volumes:
-  admin-keys:
   caddy-data:
   caddy-config:

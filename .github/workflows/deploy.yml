@@ -1,5 +1,4 @@
-# main push 시 변경된 서비스만 OCI에서 재빌드·재배포.
-# Api/Admin은 서로 독립(ProjectReference 없음)이라 개별 배포 안전.
+# main push 시 변경된 서비스만 OCI에서 재빌드·재배포. Admin은 로컬 전용(배포 제외).
 name: deploy
 
 on:
@@ -9,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: "재빌드할 서비스(공백 구분: api admin caddy). 비우면 전체."
+        description: "재빌드할 서비스(공백 구분: api caddy). 비우면 전체."
         type: string
-        default: "admin"
+        default: "api"
       no_cache:
         description: "캐시 없이 빌드(stale 레이어로 자산 누락되는 문제 방지)"
         type: boolean
@@ -37,8 +36,6 @@ jobs:
           filters: |
             api:
               - 'Api/**'
-            admin:
-              - 'Admin/**'
             infra:
               - 'docker-compose.yml'
               - 'Caddyfile'
@@ -48,13 +45,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             list="${{ inputs.services }}"     # 수동 실행 → 지정 서비스(비우면 전체)
-            [ -z "$list" ] && list="api admin caddy"
+            [ -z "$list" ] && list="api caddy"
           elif [ "${{ steps.changes.outputs.infra }}" = "true" ]; then
-            list="api admin caddy"          # 인프라 변경 → 전체 반영
+            list="api caddy"                # 인프라 변경 → 전체 반영
           else
             list=""
             [ "${{ steps.changes.outputs.api }}" = "true" ]   && list="$list api"
-            [ "${{ steps.changes.outputs.admin }}" = "true" ] && list="$list admin"
           fi
           echo "list=$(echo $list | xargs)" >> "$GITHUB_OUTPUT"
 
@@ -75,5 +71,6 @@ jobs:
             if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.no_cache }}" = "true" ]; then
               docker compose build --no-cache ${{ steps.services.outputs.list }}
             fi
-            docker compose up -d --build ${{ steps.services.outputs.list }}
+            # --remove-orphans: compose에서 빠진 서비스(admin 등)의 잔여 컨테이너 정리
+            docker compose up -d --build --remove-orphans ${{ steps.services.outputs.list }}
             docker image prune -f               # 이전 이미지 정리(부트볼륨 절약)
