@@ -27,6 +27,11 @@ public static class ConsentEndpoints
             {
                 await using var conn = new NpgsqlConnection(dbConnString);
                 await conn.OpenAsync(ct);
+                // 온보딩 전(공개 프로필 미프로비저닝) 유저는 게이트 대상 아님 → 온보딩으로 흘려보냄.
+                // 온보딩(/me/profile)이 프로비저닝과 동시에 동의를 기록한다. 여기서 게이트를 띄우면
+                // user_consents.user_id FK(→public.users) 때문에 동의 기록이 불가해 데드락(신규 가입 전원 차단).
+                if (!await IsProvisionedAsync(conn, meId, ct))
+                    return ApiResults.Ok("OK", new { required = false, docs = Array.Empty<ConsentDoc>() });
                 var docs = new List<ConsentDoc>();
                 foreach (var type in Types)
                     docs.Add(await StatusForTypeAsync(conn, meId, type, loc, ct));
@@ -55,6 +60,14 @@ public static class ConsentEndpoints
             }
             catch (NpgsqlException) { return ApiResults.ServiceUnavailable("DB_UNAVAILABLE"); }
         });
+    }
+
+    /// 공개 프로필(public.users) 프로비저닝 여부. 온보딩 완료 = 행 존재.
+    private static async Task<bool> IsProvisionedAsync(NpgsqlConnection conn, Guid meId, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand("select 1 from public.users where id = @me", conn);
+        cmd.Parameters.AddWithValue("me", meId);
+        return await cmd.ExecuteScalarAsync(ct) is not null;
     }
 
     private static async Task<ConsentDoc> StatusForTypeAsync(NpgsqlConnection conn, Guid meId, string type, string loc, CancellationToken ct)
