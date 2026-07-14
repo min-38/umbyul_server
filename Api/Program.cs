@@ -17,6 +17,7 @@ using Api.Profile;
 using Api.Ratings;
 using Api.Search;
 using Api.Sets;
+using Api.Sitemap;
 using Api.Social;
 using Api.Spotify;
 using Api.Storage;
@@ -308,6 +309,9 @@ app.MapDiscoverEndpoints(dbConnString);
 
 // Chart (/chart) — 공개, DB 집계 랭킹(최다/최고·베이지안/호불호) (NON-82)
 app.MapChartEndpoints(dbConnString);
+
+// Sitemap (/sitemap/targets) — 공개, 상세 페이지 존재하는 track/album/artist ID 나열(web sitemap.xml용)
+app.MapSitemapEndpoints(dbConnString);
 
 // 약관/개인정보 (/legal/{type}) — 공개 조회 (NON-64)
 app.MapLegalEndpoints(dbConnString);
