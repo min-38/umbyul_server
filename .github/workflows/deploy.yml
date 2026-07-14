@@ -1,0 +1,60 @@
+# main push 시 변경된 서비스만 OCI에서 재빌드·재배포.
+# Api/Admin은 서로 독립(ProjectReference 없음)이라 개별 배포 안전.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false   # 배포 도중 새 push 와도 앞 배포 끝나고 순차 실행
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # paths-filter가 직전 커밋과 diff 뜨는 데 필요
+
+      # 어떤 폴더가 바뀌었는지 판정
+      - id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            api:
+              - 'Api/**'
+            admin:
+              - 'Admin/**'
+            infra:
+              - 'docker-compose.yml'
+              - 'Caddyfile'
+
+      # 재빌드할 서비스 목록 계산
+      - id: services
+        run: |
+          if [ "${{ steps.changes.outputs.infra }}" = "true" ]; then
+            list="api admin caddy"          # 인프라 변경 → 전체 반영
+          else
+            list=""
+            [ "${{ steps.changes.outputs.api }}" = "true" ]   && list="$list api"
+            [ "${{ steps.changes.outputs.admin }}" = "true" ] && list="$list admin"
+          fi
+          echo "list=$(echo $list | xargs)" >> "$GITHUB_OUTPUT"
+
+      # 바뀐 서비스가 있을 때만 배포
+      - name: Deploy over SSH
+        if: steps.services.outputs.list != ''
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.OCI_HOST }}
+          username: ${{ secrets.OCI_USER }}
+          key: ${{ secrets.OCI_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.OCI_DEPLOY_PATH }}
+            git fetch origin main
+            git reset --hard origin/main        # .env는 gitignore라 보존됨
+            docker compose up -d --build ${{ steps.services.outputs.list }}
+            docker image prune -f               # 이전 이미지 정리(부트볼륨 절약)

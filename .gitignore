@@ -671,3 +671,7 @@ $RECYCLE.BIN/
 # Additional files built by Visual Studio
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,visualstudio,csharp,dotnetcore,macos,windows,linux
+
+# 배포 시크릿(env_file) — 예제만 커밋
+.env
+!.env.example

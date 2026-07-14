@@ -1,0 +1,13 @@
+# 자동 HTTPS(Let's Encrypt). 80/443 인바운드 개방 + DNS가 이 서버를 가리켜야 발급됨.
+# WebSocket(Blazor Server SignalR)은 Caddy가 자동 처리.
+{
+	email contact@umbyul.com
+}
+
+api.umbyul.com {
+	reverse_proxy api:8080
+}
+
+admin.umbyul.com {
+	reverse_proxy admin:8080
+}

@@ -1,0 +1,13 @@
+# 로컬 테스트 전용 — 명시적으로 -f 로 병합할 때만 적용(프로덕션엔 영향 없음).
+# Caddy/TLS 없이 Api·Admin을 로컬 포트로 직접 노출해 부팅·DB연결·기능을 확인.
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up api admin
+services:
+  api:
+    ports:
+      - "5177:8080"
+  admin:
+    ports:
+      - "5243:8080"
+    environment:
+      # 로컬에선 프록시 없으니 KnownProxies 무의미 → 그대로 둬도 무해.
+      API__URL: "http://api:8080"
